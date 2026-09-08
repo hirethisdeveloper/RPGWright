@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { waitUntil, formatFailureReport, TimeoutError } = require('../src/assertions');
+const { waitUntil, waitUntilAbsent, pollUntil, formatFailureReport, TimeoutError } = require('../src/assertions');
 
 function makeEmitter() {
   const ee = new EventEmitter();
@@ -78,6 +78,67 @@ test('waitUntil: disposes its subscription once settled, leaving no dangling lis
   };
   await waitUntil(onUpdate, () => true, { timeout: 1000 });
   assert.equal(ee.listenerCount('update'), 0);
+});
+
+test('waitUntilAbsent: resolves after holdFor when the condition is absent from the start', async () => {
+  const { onUpdate } = makeEmitter();
+  const start = Date.now();
+  await waitUntilAbsent(onUpdate, () => false, { timeout: 1000, holdFor: 50 });
+  assert.ok(Date.now() - start >= 45, 'should wait out the holdFor window, not resolve instantly');
+});
+
+test('waitUntilAbsent: waits out present-at-call-time state, then resolves once it goes and stays absent', async () => {
+  const { onUpdate, fire } = makeEmitter();
+  let present = true;
+  setTimeout(() => {
+    present = false;
+    fire();
+  }, 20);
+  await waitUntilAbsent(onUpdate, () => present, { timeout: 1000, holdFor: 50 });
+});
+
+test('waitUntilAbsent: rejects with TimeoutError if the condition is still present at the deadline', async () => {
+  const { onUpdate } = makeEmitter();
+  await assert.rejects(waitUntilAbsent(onUpdate, () => true, { timeout: 80, holdFor: 30 }), TimeoutError);
+});
+
+test('waitUntilAbsent: a delayed reappearance during the confirmation window resets it and still fails by timeout', async () => {
+  const { onUpdate, fire } = makeEmitter();
+  let present = false;
+  // Goes absent immediately, but flips back present partway through the
+  // hold window, then stays present — this is the case holdFor exists to
+  // catch: a same-instant check would have already resolved by here.
+  setTimeout(() => {
+    present = true;
+    fire();
+  }, 15);
+  await assert.rejects(waitUntilAbsent(onUpdate, () => present, { timeout: 100, holdFor: 30 }), TimeoutError);
+});
+
+test('waitUntilAbsent: disposes its subscription once settled', async () => {
+  const ee = new EventEmitter();
+  const onUpdate = (listener) => {
+    ee.on('update', listener);
+    return { dispose: () => ee.off('update', listener) };
+  };
+  await waitUntilAbsent(onUpdate, () => false, { timeout: 1000, holdFor: 10 });
+  assert.equal(ee.listenerCount('update'), 0);
+});
+
+test('pollUntil: resolves once check() returns true', async () => {
+  let calls = 0;
+  await pollUntil(
+    async () => {
+      calls += 1;
+      return calls >= 3;
+    },
+    { timeout: 1000, pollInterval: 10 },
+  );
+  assert.ok(calls >= 3);
+});
+
+test('pollUntil: rejects with TimeoutError if check() never returns true', async () => {
+  await assert.rejects(pollUntil(async () => false, { timeout: 60, pollInterval: 10 }), TimeoutError);
 });
 
 test('formatFailureReport: renders the full §9 block with the failed action marked', () => {

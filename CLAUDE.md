@@ -37,9 +37,9 @@ GameDriver  (game.js — public Playwright-like API)
 
 - `src/pty.js` — owns the raw OS process via node-pty; spawn/write/resize/kill primitives, no app knowledge, no signal policy.
 - `src/terminal.js` — wraps `@xterm/headless`; re-derives the currently visible screen from live buffer state on every read.
-- `src/assertions.js` — `waitUntil()` (event-driven wait, never polling) and `formatFailureReport()` (the §9 failure block).
+- `src/assertions.js` — three wait primitives (`waitUntil`, `waitUntilAbsent`, `pollUntil`, all event/poll-driven, never a raw setInterval-as-sync-mechanism) and `formatFailureReport()` (the §9 failure block).
 - `src/keys.js` — named key → raw byte sequence table (`KEY_SEQUENCES`), extendable via `launchGame`'s `keys` option.
-- `src/game.js` — `GameDriver`/`launchGame()`, the public API: `press`, `type`, `expectText`, `stop`, plus `getScreenText`/`actions`.
+- `src/game.js` — `GameDriver`/`launchGame()`, the full public API: `press`/`press.raw`, `type`, `expectText`, `expectNotText`, `expectScreen`, `expectState`, `resize`, `stop`, plus `getScreenText`/`actions`.
 - `src/index.js` — core package entry point re-exporting the above for advanced/direct consumption.
 - `runner/`, `bin/rpgwright.js` — the bundled test runner and CLI (Phase 3; not yet built).
 
@@ -55,7 +55,7 @@ GameDriver  (game.js — public Playwright-like API)
 
 - [`agent_docs/pty.md`](./agent_docs/pty.md) — node-pty spawn/write/resize/kill contract, the SIGHUP default-signal trap, process lifecycle. Read before touching `src/pty.js` or anything about process spawning/killing.
 - [`agent_docs/terminal.md`](./agent_docs/terminal.md) — the `@xterm/headless` integration, why regex ANSI-stripping was rejected, how "current screen" is re-derived rather than accumulated. Read before touching `src/terminal.js` or debugging screen-text mismatches.
-- [`agent_docs/assertions.md`](./agent_docs/assertions.md) — `waitUntil`'s event-driven design, the update-emitter contract, `TimeoutError`, the failure-report format and its rationale. Read before touching `src/assertions.js` or any `expect*` method in `game.js`.
-- [`agent_docs/game-driver.md`](./agent_docs/game-driver.md) — the full `GameDriver` API, action history, signal/lifecycle handling, the diagnostics hook, and a documented real-world Ink input-timing race discovered while building this. Read before touching `src/game.js` or writing a new fixture app.
+- [`agent_docs/assertions.md`](./agent_docs/assertions.md) — the three wait primitives (`waitUntil`, `waitUntilAbsent`, `pollUntil`), the update-emitter contract, `TimeoutError`, the failure-report format and its rationale. Read before touching `src/assertions.js` or any `expect*` method in `game.js`.
+- [`agent_docs/game-driver.md`](./agent_docs/game-driver.md) — the full `GameDriver` API (including `expectScreen`'s two matcher modes + snapshots), action history, signal/lifecycle handling, the diagnostics hook, and two documented real-world PTY/Ink timing gotchas found while building this (an input-wiring race at mount, and rapid-keystroke coalescing). Read before touching `src/game.js` or writing a new fixture app.
 
 Docs not yet written (later phases): `testing-strategy.md`, `runner.md` (Phase 3). Consumer-facing `docs/` (Playwright-style usage guide) also starts in Phase 3 — see `RPGWright.md` §12.

@@ -1,13 +1,23 @@
 ---
 name: game-driver
-description: The GameDriver API, action history, signal/lifecycle handling, the diagnostics hook, and a real Ink input-timing race discovered while building Phase 1.
+description: The full GameDriver API (press/type/expectText/expectNotText/expectScreen/expectState/resize/stop), action history, signal/lifecycle handling, the diagnostics hook, and two real PTY/Ink timing gotchas discovered while building this.
 ---
 
 # `game.js` — `GameDriver` / `launchGame()`
 
-## What's implemented in Phase 1
+## What's implemented
 
-`launchGame(options)` returns a `GameDriver` with `press`, `type`, `expectText`, `stop`, plus `getScreenText()` and `actions` (both trivial enough to ship early rather than gate behind Phase 2's `expectNotText`/`expectScreen`/`expectState`/`resize`). It wires together [[pty]] and [[terminal]] through the update-emitter contract described in [[assertions]].
+`launchGame(options)` returns a `GameDriver` with `press`/`press.raw`, `type`, `expectText`, `expectNotText`, `expectScreen`, `expectState`, `resize`, `stop`, plus `getScreenText()` and `actions`. It wires together [[pty]] and [[terminal]] through the update-emitter contract described in [[assertions]], and every `expect*` method builds on exactly one of [[assertions]]'s three wait primitives rather than reimplementing wait logic per method (`expectText`/`expectScreen` on `waitUntil`, `expectNotText` on `waitUntilAbsent`, `expectState` on `pollUntil`).
+
+## `expectScreen`'s two matcher modes
+
+`expectScreen(matcher, opts)` is deliberately *not* the same check as `expectText` with a different name. A string matcher requires the **entire visible screen to equal it exactly**; a RegExp matcher behaves like `expectText`'s (`.test()` against the full screen, so it matches anywhere) but is framed as a whole-screen assertion because pairing it with the string mode's exact-equality semantics makes the method genuinely useful for "assert there's nothing else unexpected on screen," which `expectText`'s substring check can't do. The third mode, `{ snapshot: name }`, is Jest/Vitest-style: if `<snapshotsDir>/<name>.snap` doesn't exist yet (or `opts.updateSnapshot`/`RPGWRIGHT_UPDATE_SNAPSHOTS=1` is set), the current screen is captured and written immediately, with no waiting — recording a new snapshot isn't a condition to wait for. If it exists, the stored text becomes the `waitUntil` predicate's target, same as string-mode equality. `snapshotsDir` defaults to `<cwd>/__snapshots__`; every snapshot-mode test in `test/menu-nav.test.js` overrides it to a temp directory specifically so the repo doesn't accumulate generated snapshot files from its own test runs.
+
+## Action history shape
+
+Every `press`/`type`/`expect*` call pushes `{ type, detail, ok }` onto `actions`, in call order. `press`/`type`/`resize` set `ok: true` immediately (a raw write or resize call can't fail on its own). Any `expect*` call starts a record at `ok: null` and flips it to `true`/`false` once its underlying wait settles — the *same* record object is what gets passed to `formatFailureReport` as `failedRecord` on failure, so the report's "Last action" and the numbered list's `← failed after this action` marker both key off object identity (`fullActions.indexOf(failedRecord)`), not a fragile index number computed separately.
+
+Note that `actions` does **not** include the `launchGame(...)` call itself — that's synthesized fresh inside `buildFailureMessage()` at failure time (`{ type: 'launchGame', detail: JSON.stringify({ command, args }) }`), not tracked as a persistent record. See [[assertions]] for why that split exists.
 
 ## Action history shape
 
@@ -56,3 +66,11 @@ if (!ready) return <Text>Loading...</Text>;
 This makes the fixture's own readiness observable and condition-waitable (`expectText` on the real prompt text now only ever resolves once input truly works) — fully consistent with the "no arbitrary sleeps" principle (§2), since the fix is a real condition, not a timer. Five consecutive stress-test runs and the full test suite (32/32) passed reliably after this change, versus intermittent failures before it.
 
 **Why this belongs here and not just in the fixture's source:** any real consumer testing a real Ink app that shows an interactive prompt before its own input handling is wired up will hit the exact same race, entirely outside RPGWright's control. This is worth surfacing prominently in the eventual `docs/best-practices.md` (Phase 3+) as guidance for consumers: *don't render an interactive prompt before your app can actually accept input* — good practice for a real app regardless of whether it's being tested. RPGWright's core deliberately does **not** work around this with a retry-on-press or an implicit settle delay, because both would be worse than the disease: a retry could double-submit a real keystroke the target app actually did receive but was just slow to respond to, and an implicit delay would violate the no-arbitrary-sleep principle for a problem that isn't RPGWright's to solve.
+
+## Rapid, unconfirmed keystrokes can be coalesced before the target app ever sees them
+
+Found while writing `test/menu-nav.test.js`: three back-to-back `press.raw(' ')` calls, fired without awaiting each one's on-screen effect first, only incremented the fixture's score by 1 instead of 3. This is a different mechanism from the mount-timing race above — it happens well after the app is already accepting input.
+
+**Root cause:** each `press()`/`type()` call does one `ptyHandle.write()` and returns immediately (per §4's design: the write is "effectively synchronous," the *next* `expect*` call is what actually waits). Three such calls fired in quick succession, only microtask-ticks apart, can have their bytes land in the kernel's tty input buffer close enough together that a single `read()` on the child's end returns all three as one chunk. Ink's `handleReadable` (`App.js`) treats a multi-character chunk as a single **paste** event (its own doc comment: "if user pastes text and it's more than one character, the callback will be called only once and the whole string will be passed as `input`"), not as N separate keypresses. The fixture's handler checked `input === ' '` (strict equality against a single space), so a coalesced `'  '`/`'   '` chunk matched nothing and was silently dropped — explaining the partial count (some presses landed alone, others merged and were ignored).
+
+**Not an RPGWright bug, and not fixed with product code.** The write path did exactly what it was asked: three separate one-byte writes went out. What happens to bytes between leaving the pty master and being read by the child's stdin is governed by the OS and the target app's own input parser — and a real, very fast human "button masher" can trigger this exact same coalescing on a real terminal. A retry or an inter-write delay in `press()` would be exactly the kind of magic behavior §2 rules out (and could double-fire an input the app actually did receive but was just slow to render). The correct fix lives in the *test*: confirm each keystroke's on-screen effect (`expectText`/`expectState`) before sending the next, which is also just the idiomatic way to drive a target app through this API. `test/menu-nav.test.js` does this explicitly, with a comment at the call site rather than silently.

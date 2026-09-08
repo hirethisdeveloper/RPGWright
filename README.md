@@ -2,7 +2,7 @@
 
 A Playwright-like end-to-end testing framework for terminal applications that depend on real TTY behavior — raw input mode, ANSI escape sequences, the alternate screen buffer, cursor positioning. Built for Ink/React CLI apps and RPG/MUD-style text adventures in particular, but works with any real-TTY-driven program.
 
-> **Status:** early development (Phase 1 of the build — see `RPGWright.md`). Not yet published.
+> **Status:** early development (Phase 2 of the build — see `RPGWright.md`). Not yet published.
 
 ## Why
 

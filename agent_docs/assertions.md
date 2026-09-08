@@ -1,9 +1,11 @@
 ---
 name: assertions
-description: waitUntil's event-driven design, the update-emitter contract with terminal.write(), TimeoutError, and the §9 failure-report format.
+description: waitUntil's event-driven design, waitUntilAbsent's debounced-absence design, pollUntil's poll-based design, the update-emitter contract with terminal.write(), and the §9 failure-report format.
 ---
 
 # `assertions.js`
+
+Three wait primitives, each suited to a different kind of condition: `waitUntil` (event-driven, wait for something to become true), `waitUntilAbsent` (event-driven, wait for something to become *and stay* false), and `pollUntil` (interval-based, for state with no event source at all). `game.js`'s `expectText`/`expectScreen`/`expectState` all build on exactly one of these rather than reimplementing wait logic per method.
 
 ## `waitUntil(onUpdate, predicate, { timeout, exitPromise })`
 
@@ -25,6 +27,21 @@ ptyHandle.onData((chunk) => {
 ```
 
 If this were wired to raw `onData` instead, `waitUntil`'s predicate (which reads `terminal.getScreenText()`) could run *before* that chunk's escape sequences were actually reflected in xterm's buffer state — a race that would make `expectText()` intermittently see stale content. This exact class of bug (checking derived state before the async operation that produces it has settled) is why the real input-timing race documented in [[game-driver]] was worth taking seriously rather than dismissing as test flakiness: the same "did the async side effect actually land yet" question applies on both the PTY-input side (that race) and the terminal-output side (what this contract prevents).
+
+## `waitUntilAbsent(onUpdate, isPresent, { timeout, holdFor })`
+
+Backs `expectNotText`. The one design decision here that isn't obvious from the name: **it does not fail just because `isPresent()` is true at the moment it's called.** An earlier version did — it seemed like the literal reading of "confirm this does not appear," and every unit test for it in isolation passed. It broke immediately against the real `menu-nav-ink-app` fixture, on exactly the pattern `expectNotText` exists to serve: `press('ENTER')` to toggle something off, then `expectNotText('Sound: ON')` to confirm the old label is gone. `press()` resolves before the target process has had any chance to react, so the old text is — by construction — still on screen the instant `expectNotText` is called. A same-instant "already present → fail" check makes the method fail on its single most common real use.
+
+The actual algorithm (a debounce, driven by the same `onUpdate` events `waitUntil` uses, not a poll):
+
+1. On every update (and once up front), `reconsider()`: if `isPresent()` is currently true, cancel any pending hold timer and wait for the next update. If it's false, (re)start a `holdFor`-length timer.
+2. If that timer fires without an intervening `isPresent() === true` observation, resolve — the condition has been continuously absent for the full confirmation window.
+3. If `isPresent()` flips true again before the hold timer fires (a delayed/racy reappearance — the exact case `holdFor` exists to catch, per the original spec), the timer is cancelled and the wait resets.
+4. All of this is bounded by the overall `timeout`; if a full `holdFor` streak of absence is never achieved, it rejects with `TimeoutError`. This means a genuine failure (text that never goes away) takes the full `timeout` to report, not an instant fail — a deliberate tradeoff for correctness on the common case. `test/assertions.test.js` covers all four branches: absent-from-the-start, present-then-absent-and-stable, still-present-at-deadline, and reappears-during-the-hold-window.
+
+## `pollUntil(check, { timeout, pollInterval })`
+
+The one legitimate place a bounded `setInterval`-style wait belongs in this codebase, and it backs exactly one thing: `expectState`. Unlike screen text, arbitrary external state (a database row, a file on disk) has no event RPGWright can subscribe to — there is nothing for `waitUntil`'s approach to hook into. `check` is `async () => boolean` (in `game.js`, a closure over the caller's `getState`/`matcher` pair); `pollUntil` awaits it, and if false, sleeps `min(pollInterval, timeRemaining)` before trying again, so it never overshoots `timeout` waiting on a poll that was going to fail anyway.
 
 ## `formatFailureReport(...)`
 

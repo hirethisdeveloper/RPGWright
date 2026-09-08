@@ -1,9 +1,11 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { spawnPty } = require('./pty');
 const { createVirtualTerminal } = require('./terminal');
-const { waitUntil, formatFailureReport } = require('./assertions');
+const { waitUntil, waitUntilAbsent, pollUntil, formatFailureReport } = require('./assertions');
 const { KEY_SEQUENCES } = require('./keys');
 
 const UPDATE_EVENT = 'update';
@@ -14,6 +16,16 @@ function formatNeedle(needle) {
 
 function matchesNeedle(screenText, needle) {
   return needle instanceof RegExp ? needle.test(screenText) : screenText.includes(needle);
+}
+
+function isSnapshotMatcher(matcher) {
+  return Boolean(matcher) && typeof matcher === 'object' && typeof matcher.snapshot === 'string';
+}
+
+function formatScreenMatcher(matcher) {
+  if (isSnapshotMatcher(matcher)) return `snapshot "${matcher.snapshot}"`;
+  if (matcher instanceof RegExp) return matcher.toString();
+  return `${JSON.stringify(matcher)} (exact screen match)`;
 }
 
 async function launchGame({
@@ -29,6 +41,7 @@ async function launchGame({
   getDiagnostics = null,
   scenarioName = null,
   keys = {},
+  snapshotsDir = path.join(cwd, '__snapshots__'),
 } = {}) {
   const keySequences = { ...KEY_SEQUENCES, ...keys };
   const ptyHandle = spawnPty({ command, args, cols, rows, cwd, env });
@@ -110,6 +123,83 @@ async function launchGame({
     }
   }
 
+  async function expectNotText(needle, opts = {}) {
+    const holdFor = opts.holdFor ?? 500;
+    const timeout = opts.timeout ?? expectTimeout;
+    const expected = `${formatNeedle(needle)} to not appear (held for ${holdFor}ms)`;
+    const record = recordAction('expectNotText', formatNeedle(needle), null);
+
+    try {
+      await waitUntilAbsent(onUpdate, () => matchesNeedle(terminal.getScreenText(), needle), {
+        timeout,
+        holdFor,
+      });
+      record.ok = true;
+    } catch (err) {
+      record.ok = false;
+      throw new Error(await buildFailureMessage(expected, record));
+    }
+  }
+
+  async function expectScreen(matcher, opts = {}) {
+    const record = recordAction('expectScreen', formatScreenMatcher(matcher), null);
+    try {
+      if (isSnapshotMatcher(matcher)) {
+        await matchSnapshot(matcher.snapshot, opts);
+      } else {
+        const predicate =
+          matcher instanceof RegExp
+            ? () => matcher.test(terminal.getScreenText())
+            : () => terminal.getScreenText() === matcher;
+        await waitUntil(onUpdate, predicate, {
+          timeout: opts.timeout ?? expectTimeout,
+          exitPromise: ptyHandle.waitForExit(),
+        });
+      }
+      record.ok = true;
+    } catch (err) {
+      record.ok = false;
+      throw new Error(await buildFailureMessage(formatScreenMatcher(matcher), record));
+    }
+  }
+
+  async function matchSnapshot(name, opts) {
+    const snapshotPath = path.join(snapshotsDir, `${name}.snap`);
+    const shouldRecord = opts.updateSnapshot ?? process.env.RPGWRIGHT_UPDATE_SNAPSHOTS === '1';
+
+    if (shouldRecord || !fs.existsSync(snapshotPath)) {
+      fs.mkdirSync(snapshotsDir, { recursive: true });
+      fs.writeFileSync(snapshotPath, terminal.getScreenText(), 'utf8');
+      return;
+    }
+
+    const expectedText = fs.readFileSync(snapshotPath, 'utf8');
+    await waitUntil(onUpdate, () => terminal.getScreenText() === expectedText, {
+      timeout: opts.timeout ?? expectTimeout,
+      exitPromise: ptyHandle.waitForExit(),
+    });
+  }
+
+  async function expectState(getState, matcher, opts = {}) {
+    const record = recordAction('expectState', 'getState()', null);
+    try {
+      await pollUntil(async () => matcher(await getState()), {
+        timeout: opts.timeout ?? expectTimeout,
+        pollInterval: opts.pollInterval,
+      });
+      record.ok = true;
+    } catch (err) {
+      record.ok = false;
+      throw new Error(await buildFailureMessage('state to satisfy the provided matcher', record));
+    }
+  }
+
+  async function resize(cols, rows) {
+    ptyHandle.resize(cols, rows);
+    terminal.resize(cols, rows);
+    recordAction('resize', `${cols}, ${rows}`, true);
+  }
+
   async function stop(opts = {}) {
     if (stopped) return ptyHandle.getExitInfo();
     stopped = true;
@@ -139,6 +229,10 @@ async function launchGame({
     press,
     type,
     expectText,
+    expectNotText,
+    expectScreen,
+    expectState,
+    resize,
     stop,
     getScreenText,
     actions,
