@@ -1,0 +1,39 @@
+{
+  "name": "rpgwright",
+  "version": "0.1.0",
+  "description": "A Playwright-like end-to-end testing framework for real-TTY terminal applications (Ink/React CLI apps, RPG/MUD-style text adventures, and anything else that depends on raw-mode PTY behavior).",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src",
+    "fixtures",
+    "agent_docs",
+    "CLAUDE.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@xterm/headless": "^6.0.0",
+    "node-pty": "^1.1.0"
+  },
+  "keywords": [
+    "testing",
+    "e2e",
+    "pty",
+    "tty",
+    "terminal",
+    "cli",
+    "ink",
+    "playwright"
+  ]
+}
