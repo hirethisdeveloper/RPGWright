@@ -37,6 +37,7 @@ These are specific to `rpgwright test` itself, not to any individual launched pr
 | `testDir` | the directory containing `rpgwright.config.js` | Where to look for test files. |
 | `testMatch` | `**/*.rpg.test.js` | A glob, or array of globs, matched against each file's path relative to `testDir`. |
 | `timeout` | `30000` | Per-test overall timeout (ms) — bounds the whole test function, distinct from `expectTimeout`, which bounds a single assertion. A test that hangs (rather than a single slow assertion) fails after this, with a clear "exceeded its timeout" message. |
+| `reporter` | `'list'` | Console output style: `'list'` (a running per-test pass/fail line) or `'dot'` (a compact `.`/`F` per test, Mocha-style). Both print the same full §9 failure blocks and summary — see [CLI reference](./cli.md#reporter-styles). An unrecognized value fails immediately with a clear error rather than silently falling back to the default. |
 
 ## `--config <path>`
 

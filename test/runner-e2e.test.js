@@ -32,6 +32,45 @@ test('rpgwright test: runs the menu-nav-ink-app dogfood suite as a real subproce
   assert.doesNotMatch(result.stdout, /✖/);
 });
 
+test('rpgwright test: reporter: "dot" in config produces compact dot-style output instead of a per-test line', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-e2e-dot-'));
+  fs.writeFileSync(
+    path.join(dir, 'rpgwright.config.js'),
+    `module.exports = { command: ${JSON.stringify(process.execPath)}, args: [${JSON.stringify(
+      path.join(REPO_ROOT, 'fixtures', 'minimal-ink-app', 'cli.js'),
+    )}], cols: 40, rows: 10, reporter: 'dot' };`,
+  );
+  fs.writeFileSync(
+    path.join(dir, 'smoke.rpg.test.js'),
+    `const { test } = require(${JSON.stringify(path.join(REPO_ROOT, 'runner', 'test.js'))});
+test('reaches the welcome screen', async ({ game }) => {
+  await game.expectText('Press ENTER to continue');
+});
+`,
+  );
+
+  const result = runCli(['test'], { cwd: dir });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  // The dot reporter never prints a per-test name/checkmark line, only a
+  // compact progress character followed later by the summary.
+  assert.doesNotMatch(result.stdout, /✓ reaches the welcome screen/);
+  assert.match(result.stdout.replace(/\x1b\[[0-9]*m/g, ''), /^\.\n1 passed/);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: an unknown reporter name in config fails clearly instead of running silently with a default', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-e2e-badreporter-'));
+  fs.writeFileSync(
+    path.join(dir, 'rpgwright.config.js'),
+    `module.exports = { command: ${JSON.stringify(process.execPath)}, reporter: 'nonexistent' };`,
+  );
+  const result = runCli(['test'], { cwd: dir });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr + result.stdout, /Unknown reporter "nonexistent"/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('rpgwright test: a failing test produces a nonzero exit code and prints the §9 block to stdout', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-e2e-fail-'));
   fs.writeFileSync(

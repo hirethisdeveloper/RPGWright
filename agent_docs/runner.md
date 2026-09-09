@@ -29,7 +29,7 @@ There is deliberately no fixture dependency-injection system here (no lazy/opt-i
 
 ## Reporter (`runner/reporter.js`)
 
-One built-in list-style reporter (a running ✓/✖ line per test, full §9 blocks for failures, a one-line summary) — not a pluggable reporter registry. Respects `NO_COLOR` and non-TTY output (no ANSI codes when `process.stdout.isTTY` is false). Additional styles (dot, JSON, ...) are a natural extension of this same shape later, not needed for v1.
+Two built-in styles, selected via config's `reporter` field (`'list'`, the default, or `'dot'`), both sharing one `printSummary()` — the failure-block dump and final summary line are identical between them; only the per-test progress indicator differs (`'list'`: a running ✓/✖ line per test; `'dot'`: a single `.`/`F`/`-` character, Mocha-style). `createReporter(style)` looks the factory up in a small `REPORTERS` map and throws immediately (before any test runs) on an unrecognized name, rather than silently falling back to the default — a typo'd `reporter: 'dots'` in config should fail loudly, not quietly run with the wrong output shape. Respects `NO_COLOR` and non-TTY output (no ANSI codes when `process.stdout.isTTY` is false) for both styles. A third style (e.g. `json`, for machine consumption) would extend the same `REPORTERS` map — the registry, not a hardcoded if/else, is what makes that an addition rather than a refactor.
 
 ## `rpgwright init` (`runner/init.js`)
 

@@ -40,7 +40,7 @@ function runWithTimeout(promise, timeoutMs) {
 async function runTests({ cwd = process.cwd(), configPath } = {}) {
   const config = loadConfig({ configPath, cwd });
   const files = discoverTestFiles({ testDir: config.testDir, testMatch: config.testMatch });
-  const reporter = createReporter();
+  const reporter = createReporter(config.reporter);
   const start = Date.now();
 
   if (files.length === 0) {

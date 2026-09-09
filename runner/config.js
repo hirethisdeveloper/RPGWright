@@ -6,6 +6,7 @@ const path = require('node:path');
 const DEFAULT_CONFIG_FILENAME = 'rpgwright.config.js';
 const DEFAULT_TEST_MATCH = ['**/*.rpg.test.js'];
 const DEFAULT_TEST_TIMEOUT = 30000;
+const DEFAULT_REPORTER = 'list';
 
 /**
  * Locates and loads rpgwright.config.js, then layers on runner-level
@@ -46,7 +47,8 @@ function loadConfig({ configPath, cwd = process.cwd() } = {}) {
     testDir,
     testMatch: userConfig.testMatch || DEFAULT_TEST_MATCH,
     timeout: userConfig.timeout ?? DEFAULT_TEST_TIMEOUT,
+    reporter: userConfig.reporter || DEFAULT_REPORTER,
   };
 }
 
-module.exports = { loadConfig, DEFAULT_CONFIG_FILENAME, DEFAULT_TEST_MATCH, DEFAULT_TEST_TIMEOUT };
+module.exports = { loadConfig, DEFAULT_CONFIG_FILENAME, DEFAULT_TEST_MATCH, DEFAULT_TEST_TIMEOUT, DEFAULT_REPORTER };

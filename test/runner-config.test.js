@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { loadConfig, DEFAULT_TEST_MATCH, DEFAULT_TEST_TIMEOUT } = require('../runner/config');
+const { loadConfig, DEFAULT_TEST_MATCH, DEFAULT_TEST_TIMEOUT, DEFAULT_REPORTER } = require('../runner/config');
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-config-test-'));
@@ -35,6 +35,14 @@ test('loadConfig: applies testDir/testMatch/timeout defaults when the config omi
   assert.equal(config.testDir, cwd);
   assert.deepEqual(config.testMatch, DEFAULT_TEST_MATCH);
   assert.equal(config.timeout, DEFAULT_TEST_TIMEOUT);
+  assert.equal(config.reporter, DEFAULT_REPORTER);
+});
+
+test('loadConfig: an explicit reporter choice overrides the default', () => {
+  const cwd = tempDir();
+  fs.writeFileSync(path.join(cwd, 'rpgwright.config.js'), "module.exports = { command: 'node', reporter: 'dot' };");
+  const config = loadConfig({ cwd });
+  assert.equal(config.reporter, 'dot');
 });
 
 test('loadConfig: passes through launchGame-specific fields untouched, without inventing its own defaults', () => {

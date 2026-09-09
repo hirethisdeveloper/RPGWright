@@ -40,7 +40,7 @@ example.rpg.test.js
 1 passed (56ms)
 ```
 
-A failing test prints its full failure report inline — everything needed to understand what happened without a separate log file: the scenario name, the last action attempted, what was expected, the complete current screen, the process's exit status, any configured diagnostics, and the full numbered history of actions leading up to the failure:
+A failing test prints its full failure report inline — everything needed to understand what happened without a separate log file: the scenario name (the test's own name — every test run through `rpgwright test` gets this automatically), the last action attempted, what was expected, the complete current screen, the process's exit status, any configured diagnostics, and the full numbered history of actions leading up to the failure:
 
 ```
 broken.rpg.test.js
@@ -50,7 +50,7 @@ broken.rpg.test.js
     E2E TEST FAILED
     ────────────────────────────────
 
-    Scenario: unnamed scenario
+    Scenario: never happens
 
     Last action:
       expectText("this will never appear")
@@ -60,6 +60,33 @@ broken.rpg.test.js
 ```
 
 Output respects `NO_COLOR` and non-TTY environments (CI logs, piped output) automatically — no flag needed.
+
+### Reporter styles
+
+Set `reporter` in `rpgwright.config.js` to choose the console output style (see [Configuration](./configuration.md)):
+
+```js
+module.exports = {
+  command: 'node',
+  args: ['bin/my-cli-app.js'],
+  reporter: 'dot', // or 'list' (the default)
+};
+```
+
+- **`'list'`** (default) — a running pass/fail/skip line per test, as shown above.
+- **`'dot'`** — one compact character per test (`.` pass, `F` fail, `-` skip) on a single line, Mocha-style, useful for a large suite where a full per-test line per pass is more noise than signal:
+
+  ```
+  ....F..
+
+  1) reaches settings
+      E2E TEST FAILED
+      ...
+
+  6 passed, 1 failed (2103ms)
+  ```
+
+  Both styles print the identical full §9 failure block and summary — only the per-test progress indicator differs.
 
 ### Exit codes
 

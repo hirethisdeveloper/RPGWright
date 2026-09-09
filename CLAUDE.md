@@ -45,7 +45,7 @@ GameDriver  (game.js — public Playwright-like API)
 - `runner/discover.js` — hand-rolled glob-to-RegExp test-file discovery (no external glob dependency).
 - `runner/test.js` — the `test()`/`describe()`/`test.skip` authoring API and its per-file registry (`_beginFile`/`_collect`), re-exported with `expect` as `rpgwright/test`.
 - `runner/expect.js` — `expect(game).toX()` sugar, delegating straight to `GameDriver`'s `expect*` methods.
-- `runner/reporter.js` — the one built-in console reporter (list-style, prints §9 blocks on failure).
+- `runner/reporter.js` — two built-in console reporters (`list`/`dot`, selected via config's `reporter` field), sharing one summary/failure-block printer; prints §9 blocks on failure.
 - `runner/run.js` — orchestration: discover → for each file, launch a fresh `GameDriver` per test, run it (bounded by `config.timeout`), auto-`stop()` in a `finally`, report.
 - `runner/init.js` — `rpgwright init`'s scaffold (a genuinely self-contained, dependency-free example that passes immediately).
 - `bin/rpgwright.js` — the `rpgwright` CLI entry (`init`, `test` subcommands).
