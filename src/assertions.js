@@ -136,10 +136,11 @@ const NO_DIAGNOSTICS_HOOK_NOTE =
   'No diagnostics hook was configured for this launchGame() call. Note: this process ran in a real PTY, ' +
   'so stdout and stderr are already merged into one stream — see "Current screen" above for the process\'s actual output.';
 
-function indent(text) {
+function indent(text, spaces = 2) {
+  const pad = ' '.repeat(spaces);
   return String(text)
     .split('\n')
-    .map((line) => `  ${line}`)
+    .map((line) => pad + line)
     .join('\n');
 }
 
@@ -199,4 +200,4 @@ function formatFailureReport({
   ].join('\n');
 }
 
-module.exports = { TimeoutError, waitUntil, waitUntilAbsent, pollUntil, formatFailureReport };
+module.exports = { TimeoutError, waitUntil, waitUntilAbsent, pollUntil, formatFailureReport, indent };

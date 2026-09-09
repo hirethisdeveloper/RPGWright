@@ -53,7 +53,13 @@ function App() {
         setCursor((c) => (c + 1) % MENU_OPTIONS.length);
         return;
       }
-      if (/[0-9]/.test(input)) {
+      // input.length === 1 guards against a multi-character "paste" chunk
+      // (e.g. a digit and Enter arriving in the same PTY read when sent in
+      // quick succession) -- Ink hands a paste to the handler as one raw
+      // string with none of the key.* flags set, and a bare regex .test()
+      // would match a digit anywhere in it, silently absorbing the rest
+      // (including a swallowed Enter) into the typed buffer.
+      if (input.length === 1 && /[0-9]/.test(input)) {
         setTypedBuffer((b) => b + input);
         return;
       }

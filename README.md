@@ -2,7 +2,7 @@
 
 A Playwright-like end-to-end testing framework for terminal applications that depend on real TTY behavior — raw input mode, ANSI escape sequences, the alternate screen buffer, cursor positioning. Built for Ink/React CLI apps and RPG/MUD-style text adventures in particular, but works with any real-TTY-driven program.
 
-> **Status:** early development (Phase 2 of the build — see `RPGWright.md`). Not yet published.
+> **Status:** early development (Phase 3 of the build — see `RPGWright.md`). Not yet published.
 
 ## Why
 
@@ -21,7 +21,17 @@ npx rpgwright init
 npx rpgwright test
 ```
 
-Full documentation lives in [`docs/`](./docs/intro.md).
+`rpgwright init` scaffolds a config and a self-contained example that passes immediately, so you can see the tool work before wiring it up to your own app.
+
+## Documentation
+
+Full documentation lives in [`docs/`](./docs/intro.md):
+
+- [Getting started](./docs/intro.md)
+- [Writing tests](./docs/writing-tests.md)
+- [Configuration reference](./docs/configuration.md)
+- [CLI reference](./docs/cli.md)
+- [Assertions](./docs/assertions.md)
 
 ## License
 

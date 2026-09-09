@@ -6,21 +6,27 @@
   "type": "commonjs",
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js"
+    ".": "./src/index.js",
+    "./test": "./runner/test.js"
+  },
+  "bin": {
+    "rpgwright": "bin/rpgwright.js"
   },
   "engines": {
     "node": ">=18"
   },
   "files": [
     "src",
-    "fixtures",
-    "agent_docs",
-    "CLAUDE.md",
+    "runner",
+    "bin",
+    "docs",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "node --test test/*.test.js",
+    "test:e2e": "node bin/rpgwright.js test --config test/rpg/minimal/rpgwright.config.js && node bin/rpgwright.js test --config test/rpg/menu-nav/rpgwright.config.js"
   },
   "dependencies": {
     "@xterm/headless": "^6.0.0",

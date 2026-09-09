@@ -15,7 +15,16 @@ function formatNeedle(needle) {
 }
 
 function matchesNeedle(screenText, needle) {
-  return needle instanceof RegExp ? needle.test(screenText) : screenText.includes(needle);
+  if (needle instanceof RegExp) {
+    // Reset lastIndex before every check: a needle constructed with the
+    // 'g' or 'y' flag otherwise carries match position across repeated
+    // calls (waitUntil/waitUntilAbsent re-check the same needle on every
+    // screen update), making "does this appear right now" depend on how
+    // many times it's already been checked rather than the current screen.
+    needle.lastIndex = 0;
+    return needle.test(screenText);
+  }
+  return screenText.includes(needle);
 }
 
 function isSnapshotMatcher(matcher) {
@@ -50,8 +59,15 @@ async function launchGame({
   const actions = [];
   let stopped = false;
 
-  ptyHandle.onData((chunk) => {
-    terminal.write(chunk).then(() => updates.emit(UPDATE_EVENT));
+  const dataSubscription = ptyHandle.onData((chunk) => {
+    // stop() disposes this subscription before disposing the terminal, but
+    // a chunk already in flight when that happens could still resolve (or
+    // throw, via the Promise constructor) afterward — .catch keeps that
+    // from surfacing as an unhandled rejection.
+    terminal
+      .write(chunk)
+      .then(() => updates.emit(UPDATE_EVENT))
+      .catch(() => {});
   });
 
   function onUpdate(listener) {
@@ -149,7 +165,7 @@ async function launchGame({
       } else {
         const predicate =
           matcher instanceof RegExp
-            ? () => matcher.test(terminal.getScreenText())
+            ? () => matchesNeedle(terminal.getScreenText(), matcher)
             : () => terminal.getScreenText() === matcher;
         await waitUntil(onUpdate, predicate, {
           timeout: opts.timeout ?? expectTimeout,
@@ -217,6 +233,7 @@ async function launchGame({
       exitInfo = await ptyHandle.waitForExit();
     }
 
+    dataSubscription.dispose();
     terminal.dispose();
     return exitInfo;
   }
