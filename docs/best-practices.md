@@ -30,6 +30,10 @@ await game.press('ENTER');
 await game.type('42');
 await game.expectText('42'); // confirm it actually landed first
 await game.press('ENTER');
+
+// Also reliable, when there's nothing specific to confirm:
+await game.type('42', { settle: true }); // waits until the screen stops changing
+await game.press('ENTER');
 ```
 
 This isn't paranoia — the OS can genuinely coalesce two rapid writes into a single read on the target process, and many input-handling libraries (Ink's `useInput` included) treat a multi-character chunk as one pasted string rather than N separate keystrokes. Plain typed text is more exposed to this than named keys like arrow keys or function keys, which are usually self-delimiting escape sequences a parser can split correctly even from a merged chunk. See [Writing tests](./writing-tests.md#a-note-on-rapid-keystrokes) for the concrete failure mode.
@@ -46,8 +50,26 @@ module.exports = {
 };
 ```
 
-Most config-driven apps read a variable like this from `process.env` via something like `dotenv` — and `dotenv`'s default behavior is to never override a variable that's already set, so an override passed through `env` here takes precedence over whatever's in the app's own `.env` file. If your target app persists state you need to reset between runs, do it once in the config file itself (config files are just JavaScript, evaluated once per `rpgwright test` invocation) rather than trying to add setup/teardown hooks that don't exist in the runner.
+Most config-driven apps read a variable like this from `process.env` via something like `dotenv` — and `dotenv`'s default behavior is to never override a variable that's already set, so an override passed through `env` here takes precedence over whatever's in the app's own `.env` file. If your target app persists state you need to reset, do it in a hook: `test.beforeAll` for once per file or `describe`, `test.beforeEach` for before every test (see [Writing tests](./writing-tests.md#setup-and-teardown-hooks)). For a reset that should happen once per whole run, do it in the config file itself (config files are just JavaScript, evaluated once per `rpgwright test` invocation).
+
+## Give each test its own home directory
+
+Apps often keep settings, save files and caches under `HOME`. If tests share the real one, one test's save file changes what the next test sees, and running tests on your machine changes your own setup. Ask for the `tmpHome` fixture, or seed it with the `homeFiles` option, and the app runs with `HOME` pointing at a fresh directory that's deleted afterwards (see [Writing tests](./writing-tests.md#fixtures)).
+
+## Make tests safe to run in parallel
+
+With `--workers`, tests in different files run at the same time. Each one gets its own app process, but nothing stops two apps from writing the same settings file, the same database, or listening on the same port. Use `tmpHome` (or `homeFiles`) for anything under `HOME`, and `testInfo.workerIndex` to give each worker its own database name or port.
+
+## Retries reveal flakiness; they don't fix it
+
+`--retries` keeps an intermittent failure from blocking a build, and marks the test as flaky. Treat a flaky report as a bug: usually an action sent before the previous one's effect landed (see above) or a wait on the wrong thing. `--repeat-each 20` on just that test is a quick way to reproduce it and to check a fix.
+
+## Keep volatile content out of snapshots
+
+A snapshot that includes a clock, a random ID or a build number fails on every run, and people learn to re-record it without looking. That defeats the point. Mask such content where it appears (`mask: [/\d\d:\d\d/]`), or replace it with `normalize`, so the snapshot still checks everything around it. See [Assertions](./assertions.md#volatile-content-mask-normalize-maxdiffcells). For anything where *how* it's drawn matters, such as a highlight, an error shown in red, or a dimmed disabled item, use `{ styles: true }`; a text-only snapshot can't see styling.
 
 ## Don't chase flakiness with sleeps
 
 If a test is intermittently failing, the fix is almost never a `setTimeout` — it's usually one of the two things above: an assertion checking for text that isn't quite what renders, or an action sent before the previous one's effect was confirmed. A `sleep()` that happens to make a flaky test pass usually means the *next* environment (slower CI, a busier machine) will make it fail again.
+
+When you need the screen to stop moving rather than to show something specific (an animation or spinner finishing, a redraw completing before a snapshot), use `waitForStable()` (see [Assertions](./assertions.md#waitforstable)). It waits for a quiet period measured from the last real screen update, so it adapts to a slow machine where a fixed sleep wouldn't.

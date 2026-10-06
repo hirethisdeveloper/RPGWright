@@ -9,6 +9,10 @@ description: node-pty spawn/write/resize/kill contract, the SIGHUP default-signa
 
 `spawnPty()` is the only place in RPGWright that touches `node-pty` directly. It owns exactly one thing: the raw OS process running inside a pseudo-terminal. It has no opinion about *when* to kill the process, what signal escalation policy to use, or what the process's output means — that's `game.js`'s and `terminal.js`'s job respectively. Keeping this boundary strict is what let `terminal.js` and `assertions.js` be built and tested independently of any real process.
 
+## Spawn options
+
+`spawnPty({ command, args, cols, rows, cwd, env, term = 'xterm-color' })`. `term` becomes node-pty's `name`, and node-pty itself writes that into the child's `TERM` (overriding any `TERM` in `env`), so `term` is the only way to control `TERM`. The `'xterm-color'` default lives here and nowhere else; `game.js` passes `term` through as `undefined` unless the caller set it. Every other environment policy (`colorDepth`, `locale`) is applied by `game.js`'s `buildEnv()` before `env` reaches this module, keeping this module policy-free.
+
 ## The returned handle
 
 ```js
@@ -20,6 +24,10 @@ description: node-pty spawn/write/resize/kill contract, the SIGHUP default-signa
 `onData` and the exit-tracking machinery are built on node-pty's own `EventEmitter2`-based `onData`/`onExit` (see `node_modules/node-pty/lib/eventEmitter2.js`) — a small hand-rolled emitter, not Node's core `EventEmitter`. Its `dispose()` just splices one listener out of an array; it has no side effects on the underlying socket (no pause/resume triggered by listener count), so subscribing and disposing listeners freely (as `assertions.js`'s `waitUntil` does on every call) is safe and doesn't drop data between listener swaps.
 
 `waitForExit()` is memoized against a single `exitInfo` value set once by node-pty's `onExit` — calling it after the process has already exited resolves immediately with the same info, rather than hanging (verified by `test/pty.test.js`'s "resolves immediately once the process has already exited" case).
+
+## `spawnPipe`: the same handle without a terminal
+
+`spawnPipe({ command, args, cwd, env })` returns the same handle shape from `child_process.spawn` with three pipes, for `launchGame({ tty: false })`. stdout and stderr feed one `onData` stream (a terminal merges them too); `resize()` is a no-op; `kill()` forwards to the child. Exit info is normalized to node-pty's shape so nothing above this module can tell the difference: signals become **numbers** via `os.constants.signals` (child_process reports names), and a spawn failure (`ENOENT`), which emits `error` and may never emit `close`, resolves as exit code 127, as a shell would report it. Writing after the child closed stdin is swallowed instead of throwing `EPIPE`. `runner/services.js` reuses it for background services.
 
 ## Known gotchas
 

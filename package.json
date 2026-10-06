@@ -9,9 +9,16 @@
   },
   "type": "commonjs",
   "main": "src/index.js",
+  "types": "types/index.d.ts",
   "exports": {
-    ".": "./src/index.js",
-    "./test": "./runner/test.js"
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./test": {
+      "types": "./types/test.d.ts",
+      "default": "./runner/test.js"
+    }
   },
   "bin": {
     "rpgwright": "bin/rpgwright.js"
@@ -23,6 +30,7 @@
     "src",
     "runner",
     "bin",
+    "types",
     "docs",
     "README.md",
     "LICENSE"
@@ -30,7 +38,7 @@
   "scripts": {
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "node --test test/*.test.js",
-    "test:e2e": "node bin/rpgwright.js test --config test/rpg/minimal/rpgwright.config.js && node bin/rpgwright.js test --config test/rpg/menu-nav/rpgwright.config.js"
+    "test:e2e": "node bin/rpgwright.js test --config test/rpg/minimal/rpgwright.config.js && node bin/rpgwright.js test --config test/rpg/menu-nav/rpgwright.config.js && node bin/rpgwright.js test --config test/rpg/term-probe/rpgwright.config.js"
   },
   "dependencies": {
     "@xterm/headless": "^6.0.0",

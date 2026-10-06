@@ -113,6 +113,41 @@ function waitUntilAbsent(onUpdate, isPresent, { timeout = 10000, holdFor = 500 }
 }
 
 /**
+ * Resolves once `onUpdate` has gone `quiet` ms without firing — "the screen
+ * has stopped changing". Each update restarts the quiet window; the same
+ * debounced-timer shape as waitUntilAbsent's hold window, with no predicate.
+ * Rejects with TimeoutError if updates never stop for long enough before
+ * `timeout` (e.g. a spinner that animates forever).
+ */
+function waitForQuiet(onUpdate, { quiet = 150, timeout = 10000 } = {}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let quietTimer = null;
+
+    const overallTimer = setTimeout(() => {
+      settle(reject, new TimeoutError(`Timed out after ${timeout}ms waiting for ${quiet}ms without a screen update`));
+    }, timeout);
+
+    function settle(fn, value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(overallTimer);
+      clearTimeout(quietTimer);
+      subscription.dispose();
+      fn(value);
+    }
+
+    function restart() {
+      clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => settle(resolve), quiet);
+    }
+
+    const subscription = onUpdate(restart);
+    restart();
+  });
+}
+
+/**
  * Polling-based wait for state RPGWright has no event source for (e.g. a
  * database read supplied via expectState's getState callback). This is the
  * one legitimate place a bounded interval sleep belongs: unlike terminal
@@ -152,6 +187,45 @@ function formatExitInfo(exitInfo) {
 }
 
 /**
+ * A row-by-row diff of two screens (or any two multi-line texts): rows that
+ * match are shown once, rows that differ as a "-" expected / "+" actual
+ * pair followed by a caret line under the characters that changed.
+ */
+function formatScreenDiff(expected, actual) {
+  const expectedRows = expected.split('\n');
+  const actualRows = actual.split('\n');
+  const lines = [];
+  for (let i = 0; i < Math.max(expectedRows.length, actualRows.length); i += 1) {
+    const want = expectedRows[i];
+    const got = actualRows[i];
+    if (want === got) {
+      lines.push(`  ${want}`);
+      continue;
+    }
+    if (want !== undefined) lines.push(`- ${want}`);
+    if (got !== undefined) lines.push(`+ ${got}`);
+    if (want !== undefined && got !== undefined) {
+      const a = [...want];
+      const b = [...got];
+      let carets = '';
+      for (let c = 0; c < Math.max(a.length, b.length); c += 1) carets += a[c] === b[c] ? ' ' : '^';
+      lines.push(`  ${carets.replace(/\s+$/, '')}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+// A diff of two line lists where order carries no meaning (style spans):
+// lines only in `expected` as "-", lines only in `actual` as "+".
+function formatLineSetDiff(expected, actual) {
+  const a = expected ? expected.split('\n') : [];
+  const b = actual ? actual.split('\n') : [];
+  const inB = new Set(b);
+  const inA = new Set(a);
+  return [...a.filter((l) => !inB.has(l)).map((l) => `- ${l}`), ...b.filter((l) => !inA.has(l)).map((l) => `+ ${l}`)].join('\n');
+}
+
+/**
  * Builds the exact failure-report block a failing expect* call throws as
  * its Error.message. `actions` is the full list to render (callers are
  * responsible for including a leading launchGame(...) entry, since
@@ -159,19 +233,22 @@ function formatExitInfo(exitInfo) {
  */
 function formatFailureReport({
   scenarioName,
+  viewport,
   actions = [],
   failedIndex,
   expected,
   screenText,
   exitInfo,
   extraDiagnostics,
+  diff,
 }) {
   const lastAction = actions[failedIndex] || actions[actions.length - 1];
   const lastActionLine = lastAction ? `${lastAction.type}(${lastAction.detail})` : '(none)';
 
   const actionLines = actions.map((action, index) => {
     const marker = index === failedIndex ? '  ← failed after this action' : '';
-    return `  ${index + 1}. ${action.type}(${action.detail})${marker}`;
+    const nesting = '  '.repeat(action.depth || 0);
+    return `  ${nesting}${index + 1}. ${action.type}(${action.detail})${marker}`;
   });
 
   return [
@@ -179,13 +256,15 @@ function formatFailureReport({
     '────────────────────────────────',
     '',
     `Scenario: ${scenarioName || 'unnamed scenario'}`,
+    ...(viewport ? [`Viewport: ${viewport.cols}x${viewport.rows}`] : []),
     '',
     'Last action:',
     `  ${lastActionLine}`,
     '',
     'Expected:',
-    `  ${expected}`,
+    indent(expected),
     '',
+    ...(diff ? ['Diff (- expected, + actual):', indent(diff), ''] : []),
     'Current screen:',
     indent(screenText),
     '',
@@ -200,4 +279,4 @@ function formatFailureReport({
   ].join('\n');
 }
 
-module.exports = { TimeoutError, waitUntil, waitUntilAbsent, pollUntil, formatFailureReport, indent };
+module.exports = { TimeoutError, waitUntil, waitUntilAbsent, waitForQuiet, pollUntil, formatFailureReport, formatScreenDiff, formatLineSetDiff, indent };

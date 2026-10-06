@@ -1,6 +1,6 @@
 ---
 name: runner
-description: The built-in test runner and CLI — config resolution, the game fixture's launch/stop lifecycle, discovery/reporter behavior, and the init scaffold.
+description: The built-in test runner and CLI — config resolution, scopes (describe/hooks/test.use/only/skip/fail/timeouts/steps), the game fixture's launch/stop lifecycle, selection (filters/grep/list), discovery/reporter behavior, and the init scaffold.
 ---
 
 # `runner/` and `bin/rpgwright.js`
@@ -17,19 +17,78 @@ Per §2/§10 of the plan, `rpgwright test` is the primary, documented interface 
 
 A hand-rolled glob-to-RegExp converter and recursive directory walker — not a `glob`/`minimatch` dependency. RPGWright's only two dependencies are `node-pty` and `@xterm/headless` (§4); `testMatch`'s real-world need is a handful of simple patterns (the default `**/*.rpg.test.js` plus straightforward variants), which a ~20-line converter handles correctly without pulling in a third dependency for it. `node_modules`, `.git`, and `__snapshots__` are always skipped during the walk.
 
+## Registration: scopes (`runner/test.js`)
+
+Registration and execution are separate phases. `run.js` calls `_beginFile(file)`, `require()`s the file (which synchronously calls `test()`/`describe()`/`test.use()`/hooks), then `_collect()` returns that file's tests. **Every file is collected before any test runs**, so `test.only` in one file can narrow the whole run and filters can apply across files.
+
+The registry is a tree of **scopes**: the file is the root scope and each `describe()` adds a child. A scope holds its `use` options, its four hook lists, a `mode` (`'skip'`/`'only'` from `describe.skip`/`describe.only`), and an optional `timeout`/`slow`. Each collected test keeps a reference to its declaring scope plus its `titlePath`, `file`, flags (`skip`/`only`/`fail`) and declaration `line`. The line is read off the stack in `callerLine()`, from the first frame inside the file being collected, and powers `file:line` filtering. `_scopeChain(scope)` returns root→leaf, which is how `run.js` resolves everything:
+
+- **Options**: `Object.assign({}, ...chain.map(s => s.use))`, then spread over the config, so inner scopes override outer ones key by key.
+- **Skip/only**: a test is skipped if it or any enclosing scope is skipped; if any selected test is `only` (itself or via a scope), the run is narrowed to those.
+- **Timeout**: the innermost scope `timeout` wins over `config.timeout`; any `slow` in the chain triples it.
+
+`test.eachViewport([viewports,] name, fn)` is pure registration sugar: it registers one ordinary test per viewport, named `name [<viewport name>]`, carrying a test-level `use: { cols, rows }` (merged after every scope's `use`, so the viewport wins) and its `viewport`. The config's `viewports` reach `test.js` through `_setConfig(config)`, which `run.js` calls before collecting any file, since registration happens at `require()` time. `loadConfig` validates and names them (`normalizeViewports`); viewports were made a registration-time expansion rather than a Playwright-style "projects" re-run of the whole suite, so only tests that opt in pay for the extra launches. The `viewport` fixture is the test's own viewport, or `{ name, cols, rows }` from the launched game's actual size.
+
+`test.setTimeout`/`test.slow`/`test.step`/`test.info` are dual-purpose: at collection time (no running test) the first two configure the current scope; while a test runs, `run.js` has called `_setCurrentRun({ game, info })` and they act on the running test. `test.step` and `test.info` require a running test and throw a clear error otherwise.
+
 ## The `game` fixture's lifecycle (`runner/run.js`)
 
-This is the runner's actual reason to exist. For each discovered file: `runner/test.js`'s registry is reset (`_beginFile()`), the file is `require()`'d (which synchronously calls `test()`/`describe()` to populate the registry — registration and execution are deliberately separate phases), then `_collect()` hands back the registered tests for that file. For each one (unless `.skip`), `run.js`:
+This is the runner's actual reason to exist. For each selected test (unless skipped), `runFile()`:
 
-1. Calls `launchGame(config)` fresh — a new `GameDriver`, new process, every test. No shared/reused fixture across tests, which is what makes tests independent of run order and immune to one test's leftover state leaking into the next.
-2. Races the test function against `config.timeout` (test-level hang protection, separate from any individual `expectTimeout`).
-3. Calls `game.stop()` in a `finally` block — always, whether the test passed, failed, or timed out. `stop()`'s own idempotency (see [[game-driver]]) means a test that already called `game.stop()` itself for its own reasons doesn't cause a problem when the runner's automatic call runs afterward.
+1. **Opens scopes** the test needs that aren't open yet, running each scope's `beforeAll` hooks (with `{}`, since there's no per-scope `game`), and **closes** scopes the previous test was in but this one isn't, running their `afterAll` hooks in reverse. So `beforeAll` runs right before a scope's first runnable test and `afterAll` right after its last. A `beforeAll` that throws is stored on the scope, and every test in that scope fails with that error without launching anything. An `afterAll` that throws is reported as a failed entry named `<scope> > afterAll`.
+2. Sets up the fixtures the test asks for (see below); `game` is `launchGame({ ...config, ...useOptions, scenarioName })`, fresh — a new `GameDriver`, new process, every test. No shared/reused fixture across tests, which is what makes tests independent of run order and immune to one test's leftover state leaking into the next.
+3. Runs the `beforeEach` hooks root→leaf, the test, then the `afterEach` hooks leaf→root, all with `{ game, viewport }`. `afterEach` runs even when the body threw, and the body's error wins over a later `afterEach` error.
+4. Races all of that (fixture setup included) against a **deadline** (`createDeadline`): a timer measured from the test's start, which `test.setTimeout(ms)`/`test.slow()` re-arm mid-test; `0` disables it.
+5. Tears the fixtures down (stopping `game` and anything from `launch()`) — always, whether the test passed, failed, or timed out. `stop()`'s own idempotency (see [[game-driver]]) means a test that already called `game.stop()` itself for its own reasons doesn't cause a problem when the runner's automatic call runs afterward.
 
-There is deliberately no fixture dependency-injection system here (no lazy/opt-in fixtures based on parsing which destructured parameters a test function uses, the way Playwright Test's real fixture system works) — every test gets a `game`, always. That scope boundary is *why* pure internal-unit tests don't run through this runner (see [[testing-strategy]]): building real lazy fixtures just to let some tests skip launching a process would be meaningfully more machinery than Phase 3 needs, for a problem that `node:test` already solves for those tests today.
+A `test.fail` test inverts the outcome: it passes if it threw and fails with "Expected this test to fail" if it didn't. A `beforeAll` failure is never inverted.
+
+## Selection and CLI options
+
+`parseArgs` maps `--config`/`--grep`/`--grep-invert`/`--reporter`/`--max-failures` (value flags), `--list`/`--update-snapshots` (booleans) and positional filters; an unknown `--option` throws rather than being ignored. `selectTests` applies, in order: filters (`path` substring against the absolute path or the cwd-relative path; `path:line` must equal the test's own line or any enclosing describe's line), `--grep`/`--grep-invert` against the full ` > `-joined name, then `only`. `--list` prints `file:line › name` for the selection and returns without launching anything. `--reporter` overrides `config.reporter`. `--update-snapshots` passes `updateSnapshots: true` to `launchGame` (whose own default still reads `RPGWRIGHT_UPDATE_SNAPSHOTS=1`, so the env var keeps working). `--max-failures` stops launching tests once that many have failed, still closing open scopes, and prints why it stopped.
+
+## Fixtures (`runner/fixtures.js`)
+
+Fixtures are lazy, Playwright-style. `requestedFixtures(fn)` reads the names a test, hook or fixture destructures from its first parameter by parsing `fn.toString()` (with `splitTopLevel` so defaults like `{ a = { x, y } }` don't confuse it). It returns `null` when it can't tell (a non-destructured or rest parameter), and then every fixture is provided. `run.js` unions the names from `beforeEach` hooks, the body and `afterEach` hooks, and `createFixtureScope` creates exactly those, each once per test, dependencies first, recording a teardown for each; `teardown()` runs them in reverse and reports the first error (which fails a test that otherwise passed).
+
+This changed one long-standing behavior: **`game` is now launched only for tests that ask for it.** Tests that don't touch the app (setup checks, pure-logic tests sharing a file) no longer spawn a process, and nothing is launched for a parse fallback that doesn't need it either way, since a non-destructured parameter gets everything.
+
+Built-ins: `game` (via `launch(launchOptions)`; `onGame` hands it to the trace holder), `viewport` (the eachViewport size, else the game's size), `launch` (a factory for extra processes, each stopped at teardown), `tmpHome` (a temp dir, seeded from the `homeFiles` option and removed at teardown), and `testInfo`. Whenever `tmpHome` is requested or `homeFiles` is set, every launch gets `HOME=tmpHome`; the scope records the full requested set *before* creating anything, because fixtures resolve concurrently and `game` could otherwise start before `tmpHome` was pending. User fixtures come from `test.extend(defs)`: `test.js`'s `createTestApi(fixtureDefs)` builds a complete `test` (variants included) whose registrations carry the merged `fixtureDefs`; non-registering methods (`use`, hooks, `describe`, `step`, ...) are shared. A definition is a value, or `async (deps, use, testInfo)`, run until it calls `use(value)` and resumed at teardown. Redefining a built-in throws.
+
+`beforeAll`/`afterAll` still receive `{}`: their fixtures would have to outlive a single test, which this test-scoped model doesn't provide. Pure internal unit tests still belong on `node:test` (see [[testing-strategy]]).
+
+## Retries, flaky tests, repeat-each
+
+`retries` (config, validated non-negative, default 0) or `--retries` reruns a failed test with fresh fixtures, up to that many times; `testInfo.retry` says which attempt is running. A `beforeAll` failure is never retried. A pass after a retry goes to `reporter.testPassed(name, ms, { retry })`, which counts it as passed *and* flaky; `--fail-on-flaky` turns any flaky test into exit code 1. With `trace: retain-on-failure`, each failed attempt gets its own trace (`(retry n)` in the name). `--repeat-each n` clones each selected test n times at plan time, named `[repeat i/n]`, with `testInfo.repeatEachIndex`.
+
+## Traces (`runner/trace.js`)
+
+`trace` (config, default `'off'`, validated by `validateTrace`) or `--trace` decides whether to write a trace per test: `'on'` always, `'retain-on-failure'` when the test's *final* outcome failed (after `test.fail` inversion, which is why the decision is made in `runFile` rather than `runTest`). `runTest` hands the launched driver back through a `holder` object so `runFile` can call `game.getTrace()` after `stop()`. `buildTraceHtml` is a pure function of `getTrace()` plus the outcome: a self-contained page (inline CSS, `<details>` for expanding, no scripts) with the escaped failure report, every action with its screen (the failed ones open, step children indented), and the final screen. Files go to `outputDir` (config, default `test-results` next to the config file) as `<file-slug>--<test-slug>.trace.html`, and a failing test's error message gets a `Trace: <path>` line appended. No trace is written for a test whose `beforeAll` failed, since nothing was launched.
+
+## Parallel workers
+
+`workers` (config, default 1) or `--workers` runs up to that many *files* concurrently, in one process (`runPlan`). That's enough because each test's real work happens in its own app process; the runner only interleaves waiting. Tests within a file stay sequential, since a file's `beforeAll`/`afterAll` scopes assume that. Two things made concurrency safe:
+
+- **The running test is in `AsyncLocalStorage`**, not a module global. `run.js` runs each test body inside `test.js`'s `_runWith(run, fn)`, so `test.step()`/`test.info()`/`test.setTimeout()` always find *their own* test through the async context, even while another file's test is mid-await. (`_setCurrentRun` remains as a fallback for unit tests that call these outside a run.) `runner-e2e.test.js` has two parallel files whose steps fail at the same time to guard this.
+- **Output stays deterministic.** With more than one worker, each file reports into a `bufferedReporter()`; when a file finishes, every completed file from the front of the plan is flushed to the real reporter in plan order. A parallel run prints exactly what a serial one would, just sooner; `runner-e2e.test.js` compares the two outputs directly.
+
+`testInfo.workerIndex` lets tests partition shared external resources. `--max-failures` uses one shared budget; workers stop taking new files once it's spent.
+
+## Services and global setup (`runner/services.js`)
+
+`startRunEnvironment(config)` runs before the first test (only if there are tests to run, and never for `--list`): each `services` entry is started with `spawnPipe` and waited on (`readyText` in its output, `readyPort` accepting TCP connections, or immediately), failing with the tail of its output if it exits or times out; then `globalSetup` runs. It returns a teardown that unwinds in reverse: `globalSetup`'s returned function, `globalTeardown`, then each service (SIGTERM, SIGKILL after 3s). A failure part-way unwinds whatever had already started before rethrowing. `loadConfig` resolves the hook paths and each service's `cwd` against the config file's directory.
+
+## Watch mode
+
+`--watch` runs once, then `fs.watch`es (recursively) the test directory, the config's directory and any `watchPaths`, ignoring `node_modules`, `.git`, `__snapshots__` and `test-results`. Changes are debounced (200ms) and a rerun never overlaps another. If every changed file is a discovered test file, only those files rerun; otherwise the original selection reruns. Before each rerun, every module loaded from a watched directory is evicted from `require.cache`, or edited helper modules would keep their old code. It never exits on its own.
+
+## TypeScript
+
+`.ts` test files are matched by default (`**/*.rpg.test.ts`) and `require()`d like any other. On Node 22.18+ `process.features.typescript` is set and Node strips the types itself (and loads files using `import` syntax as ESM through `require(esm)`). On older Node, `ensureTypeScript` registers `tsx/cjs` if the *project* has `tsx` installed, and otherwise fails with a clear message, so RPGWright itself takes no dependency. The declarations live in `types/` (`index.d.ts` for the core, `test.d.ts` for the runner API and `Config`), wired through `"types"` conditions in `package.json`'s `exports`. Nothing compiles them against the JavaScript, so `test/types.test.js` checks for drift: every runtime export, `GameDriver` method, `test` method, locator method and matcher must be declared, and nothing declared may be missing at runtime.
 
 ## Reporter (`runner/reporter.js`)
 
-Two built-in styles, selected via config's `reporter` field (`'list'`, the default, or `'dot'`), both sharing one `printSummary()` — the failure-block dump and final summary line are identical between them; only the per-test progress indicator differs (`'list'`: a running ✓/✖ line per test; `'dot'`: a single `.`/`F`/`-` character, Mocha-style). `createReporter(style)` looks the factory up in a small `REPORTERS` map and throws immediately (before any test runs) on an unrecognized name, rather than silently falling back to the default — a typo'd `reporter: 'dots'` in config should fail loudly, not quietly run with the wrong output shape. Respects `NO_COLOR` and non-TTY output (no ANSI codes when `process.stdout.isTTY` is false) for both styles. A third style (e.g. `json`, for machine consumption) would extend the same `REPORTERS` map — the registry, not a hardcoded if/else, is what makes that an addition rather than a refactor.
+Five built-in reporters, selected by config's `reporter` field (a name, or a list of names and `[name, options]` pairs, combined by a forwarding composite whose totals come from the first) or `--reporter`. Every reporter receives the same events, which carry `{ retry }` and `{ file, line }` metadata. `json` and `junit` collect results (`createCollector`) and write `outputFile` (default `results.json`/`results.xml` in `outputDir`) at summary time; JUnit output strips the control characters XML 1.0 forbids (ANSI escapes in failure messages). `github` prints `::error`/`::warning` workflow commands, escaped per GitHub's rules, located at the test's file (relative to cwd) and line. The two console styles (`'list'`, the default, and `'dot'`) share one `printSummary()` — the failure-block dump and final summary line are identical between them; only the per-test progress indicator differs (`'list'`: a running ✓/✖ line per test; `'dot'`: a single `.`/`F`/`-` character, Mocha-style). `createReporter(style)` looks the factory up in a small `REPORTERS` map and throws immediately (before any test runs) on an unrecognized name, rather than silently falling back to the default — a typo'd `reporter: 'dots'` in config should fail loudly, not quietly run with the wrong output shape. Respects `NO_COLOR` and non-TTY output (no ANSI codes when `process.stdout.isTTY` is false) for both styles. A third style (e.g. `json`, for machine consumption) would extend the same `REPORTERS` map — the registry, not a hardcoded if/else, is what makes that an addition rather than a refactor.
 
 ## `rpgwright init` (`runner/init.js`)
 

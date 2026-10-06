@@ -134,19 +134,39 @@ function App() {
 
   const wide = size.columns >= SIDEBAR_MIN_COLS;
 
+  // The focused item is marked twice on purpose: a "> " prefix and inverse
+  // cyan styling, so tests can exercise both marker- and style-based focus.
+  const menu = React.createElement(
+    Box,
+    { flexDirection: 'column', borderStyle: 'round', paddingRight: 1 },
+    ...MENU_OPTIONS.map((label, index) =>
+      React.createElement(
+        Text,
+        { key: label, inverse: index === cursor, color: index === cursor ? 'cyan' : undefined },
+        `${index === cursor ? '> ' : '  '}${label}`,
+      ),
+    ),
+  );
+
+  const sidebar = React.createElement(
+    Box,
+    { flexDirection: 'column', borderStyle: 'single', marginLeft: 2, width: 20 },
+    React.createElement(Text, { bold: true }, 'INFO'),
+    React.createElement(Text, null, `Selected: ${MENU_OPTIONS[cursor]}`),
+  );
+
   return React.createElement(
     Box,
-    { flexDirection: 'column' },
-    React.createElement(Text, null, 'MENU NAV APP'),
-    ...MENU_OPTIONS.map((label, index) =>
-      React.createElement(Text, { key: label }, `${index === cursor ? '> ' : '  '}${label}`),
-    ),
+    { flexDirection: 'column', width: size.columns },
+    React.createElement(Box, { justifyContent: 'center' }, React.createElement(Text, { bold: true }, 'MENU NAV APP')),
+    React.createElement(Box, { flexDirection: 'row' }, menu, wide ? sidebar : null),
     React.createElement(
       Text,
       null,
       `Type a number and press ENTER, or use arrow keys${typedBuffer ? ` (typed: ${typedBuffer})` : ''}`,
     ),
     React.createElement(Text, null, wide ? 'Wide layout enabled' : 'Narrow layout'),
+    React.createElement(Box, { justifyContent: 'flex-end' }, React.createElement(Text, { dimColor: true }, 'build 42')),
   );
 }
 

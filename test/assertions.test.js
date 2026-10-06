@@ -3,7 +3,16 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { waitUntil, waitUntilAbsent, pollUntil, formatFailureReport, TimeoutError } = require('../src/assertions');
+const {
+  waitUntil,
+  waitUntilAbsent,
+  waitForQuiet,
+  pollUntil,
+  formatFailureReport,
+  formatScreenDiff,
+  formatLineSetDiff,
+  TimeoutError,
+} = require('../src/assertions');
 
 function makeEmitter() {
   const ee = new EventEmitter();
@@ -195,4 +204,99 @@ test('formatFailureReport: uses the provided diagnostics text instead of the no-
     extraDiagnostics: 'custom diagnostics text',
   });
   assert.match(report, /Diagnostics:\n {2}custom diagnostics text/);
+});
+
+test('waitForQuiet: resolves after the quiet window when no update fires', async () => {
+  const { onUpdate } = makeEmitter();
+  const start = Date.now();
+  await waitForQuiet(onUpdate, { quiet: 40, timeout: 1000 });
+  assert.ok(Date.now() - start >= 35);
+});
+
+test('waitForQuiet: each update restarts the quiet window', async () => {
+  const { onUpdate, fire } = makeEmitter();
+  const start = Date.now();
+  const timers = [20, 40, 60].map((ms) => setTimeout(fire, ms));
+  await waitForQuiet(onUpdate, { quiet: 50, timeout: 1000 });
+  timers.forEach(clearTimeout);
+  assert.ok(Date.now() - start >= 105, 'should not resolve until 50ms after the last update at ~60ms');
+});
+
+test('waitForQuiet: rejects with TimeoutError when updates never stop', async () => {
+  const { onUpdate, fire } = makeEmitter();
+  const interval = setInterval(fire, 10);
+  try {
+    await assert.rejects(waitForQuiet(onUpdate, { quiet: 50, timeout: 200 }), TimeoutError);
+  } finally {
+    clearInterval(interval);
+  }
+});
+
+test('waitForQuiet: disposes its subscription once settled', async () => {
+  const ee = new EventEmitter();
+  const onUpdate = (listener) => {
+    ee.on('update', listener);
+    return { dispose: () => ee.off('update', listener) };
+  };
+  await waitForQuiet(onUpdate, { quiet: 10, timeout: 1000 });
+  assert.equal(ee.listenerCount('update'), 0);
+});
+
+test('formatFailureReport: indents actions recorded inside a step by their depth', () => {
+  const report = formatFailureReport({
+    actions: [
+      { type: 'step', detail: '"open settings"', ok: false, depth: 0 },
+      { type: 'press', detail: '"ENTER"', ok: true, depth: 1 },
+      { type: 'expectText', detail: '"SETTINGS"', ok: false, depth: 1 },
+    ],
+    failedIndex: 2,
+    expected: '"SETTINGS"',
+    screenText: '',
+    exitInfo: null,
+  });
+  assert.match(report, /\n  1\. step\("open settings"\)\n    2\. press\("ENTER"\)\n    3\. expectText\("SETTINGS"\)  ← failed/);
+});
+
+test('formatScreenDiff: unchanged rows once, changed rows as -/+ pairs with carets under the changed characters', () => {
+  assert.equal(
+    formatScreenDiff('TITLE\n> Play\n  Quit', 'TITLE\n  Play\n> Quit\nextra'),
+    ['  TITLE', '- > Play', '+   Play', '  ^', '-   Quit', '+ > Quit', '  ^', '+ extra'].join('\n'),
+  );
+  assert.equal(formatScreenDiff('same', 'same'), '  same');
+  assert.equal(formatScreenDiff('a\nb', 'a'), '  a\n- b');
+});
+
+test('formatScreenDiff: carets count characters, not UTF-16 code units', () => {
+  assert.equal(formatScreenDiff('😀ab', '😀xb'), '- 😀ab\n+ 😀xb\n   ^');
+});
+
+test('formatLineSetDiff: order-insensitive, lines only in one side', () => {
+  assert.equal(formatLineSetDiff('1:0+3 inverse\n2:0+4 bold', '2:0+4 bold\n1:0+3 fg=6'), '- 1:0+3 inverse\n+ 1:0+3 fg=6');
+  assert.equal(formatLineSetDiff('', 'x'), '+ x');
+  assert.equal(formatLineSetDiff('x', 'x'), '');
+});
+
+test('formatFailureReport: adds a Diff section between Expected and Current screen only when given one', () => {
+  const base = { actions: [], failedIndex: 0, expected: 'snapshot "menu"', screenText: 'now', exitInfo: null };
+  const withDiff = formatFailureReport({ ...base, diff: '- was\n+ now' });
+  assert.match(withDiff, /Expected:\n  snapshot "menu"\n\nDiff \(- expected, \+ actual\):\n  - was\n  \+ now\n\nCurrent screen:/);
+  assert.doesNotMatch(formatFailureReport(base), /Diff/);
+});
+
+test('formatFailureReport: indents every line of a multi-line expectation', () => {
+  const report = formatFailureReport({ actions: [], failedIndex: 0, expected: 'line one\nObserved: two', screenText: '', exitInfo: null });
+  assert.match(report, /Expected:\n  line one\n  Observed: two\n/);
+});
+
+test('formatFailureReport: adds a Viewport line under Scenario when the size is known', () => {
+  const report = formatFailureReport({
+    scenarioName: 'fits',
+    viewport: { cols: 80, rows: 24 },
+    actions: [],
+    failedIndex: 0,
+    expected: 'x',
+    screenText: '',
+    exitInfo: null,
+  });
+  assert.match(report, /Scenario: fits\nViewport: 80x24\n/);
 });

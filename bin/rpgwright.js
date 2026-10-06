@@ -4,8 +4,26 @@
 const USAGE = `Usage: rpgwright <command> [options]
 
 Commands:
-  init               Scaffold rpgwright.config.js and an example test in the current directory
-  test [--config <path>]   Run the test suite
+  init                     Scaffold rpgwright.config.js and an example test in the current directory
+  test [options] [filter...]   Run the test suite
+
+Test options:
+  --config <path>          Use this config file instead of ./rpgwright.config.js
+  --grep <regex>           Only run tests whose full name matches
+  --grep-invert <regex>    Skip tests whose full name matches
+  --list                   List the selected tests without running them
+  --reporter <name>        Override the config's reporter (list, dot, json, junit, github)
+  --update-snapshots       Re-record every snapshot the run touches
+  --max-failures <n>       Stop after n failures
+  --trace <mode>           Write an HTML trace per test: on, off, retain-on-failure
+  --retries <n>            Rerun a failed test up to n times
+  --fail-on-flaky          Fail the run if a test only passed on a retry
+  --repeat-each <n>        Run every selected test n times
+  --workers <n>            Run up to n test files at once
+  --watch                  Rerun when files change
+
+Filters: a path substring selects matching test files; "file:line" selects
+the test (or describe block) declared on that line.
 
 Run "rpgwright init" first if you don't have a rpgwright.config.js yet.`;
 

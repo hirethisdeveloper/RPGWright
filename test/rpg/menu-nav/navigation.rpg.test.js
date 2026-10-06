@@ -1,9 +1,14 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const assert = require('node:assert/strict');
-const { test, expect } = require('rpgwright/test');
+const { test, describe, expect } = require('rpgwright/test');
+const { launchGame } = require('rpgwright');
 const stateFile = require('./state-path');
+
+const FIXTURE = path.join(__dirname, '..', '..', '..', 'fixtures', 'menu-nav-ink-app', 'cli.js');
 
 function readState() {
   return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -33,8 +38,9 @@ test('ENTER selects the arrow-highlighted option', async ({ game }) => {
 
 test('typing a number and pressing ENTER selects that option directly (no arrow keys)', async ({ game }) => {
   await game.expectText('MENU NAV APP');
-  await game.type('2');
-  await game.expectText('(typed: 2)');
+  // settle waits for the screen to stop changing after the write, so the
+  // digit and the Enter can't coalesce into one "paste" on the app's side.
+  await game.type('2', { settle: true });
   await game.press('ENTER');
   await expect(game).toHaveText('SETTINGS');
 });
@@ -95,6 +101,61 @@ test('expectScreen snapshot mode fails when the live screen no longer matches a 
   await assert.rejects(game.expectScreen({ snapshot: 'menu-then-settings' }, { timeout: 300 }), /E2E TEST FAILED/);
 });
 
+test('a failing snapshot comparison shows a row diff against the recorded screen', async ({ game }) => {
+  await game.expectText('build 42');
+  await expect(game).toMatchScreenSnapshot('diffed');
+  await game.press('ArrowDown');
+  await game.expectText('> Settings');
+  await assert.rejects(expect(game).toMatchScreenSnapshot('diffed', { timeout: 300 }), (err) => {
+    assert.match(err.message, /Diff \(- expected, \+ actual\):/);
+    assert.match(err.message, /- │> Play     │\n\s+\+ │  Play     │\n\s+\^/);
+    assert.match(err.message, /- │  Settings │\n\s+\+ │> Settings │/);
+    return true;
+  });
+});
+
+test('a styled snapshot also records and compares how the screen is drawn', async ({ game }) => {
+  await game.expectText('build 42');
+  await expect(game).toMatchScreenSnapshot('styled', { styles: true });
+  await expect(game).toMatchScreenSnapshot('styled', { styles: true, timeout: 300 });
+});
+
+describe('the same screen, drawn without color', () => {
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-styled-vs-plain-'));
+  test.use({ colorDepth: 'none', snapshotsDir });
+
+  test('matches the text snapshot but fails the styled one, with a style diff', async ({ game }) => {
+    // Record the reference from a colored instance of the same app.
+    const colored = await launchGame({ command: process.execPath, args: [FIXTURE], cols: 40, rows: 12, snapshotsDir });
+    try {
+      await colored.expectText('build 42');
+      await expect(colored).toMatchScreenSnapshot('styled-vs-plain', { styles: true });
+    } finally {
+      await colored.stop();
+    }
+
+    await game.expectText('build 42');
+    await expect(game).toMatchScreenSnapshot('styled-vs-plain', { timeout: 300 });
+    await assert.rejects(expect(game).toMatchScreenSnapshot('styled-vs-plain', { styles: true, timeout: 300 }), (err) => {
+      assert.match(err.message, /Styles \(y:x\+width style\):\n[\s\S]*- 2:1\+1 fg=6 inverse\n\s+- 2:2\+1 inverse\n\s+- 2:3\+4 fg=6 inverse/);
+      assert.doesNotMatch(err.message, /^\s+[-+] .*MENU NAV APP/m, 'the text itself did not change');
+      return true;
+    });
+  });
+});
+
+test('mask and normalize keep volatile content out of a snapshot; maxDiffCells tolerates small changes', async ({ game }) => {
+  await game.expectText('build 42');
+  const opts = { mask: [/build \d+/], normalize: (text) => text.replace(/Narrow|Wide/, 'LAYOUT') };
+  await expect(game).toMatchScreenSnapshot('masked', opts);
+  // Moving the cursor moves the ">" marker: one character on each of two rows.
+  await game.press('ArrowDown');
+  await game.expectText('> Settings');
+  await assert.rejects(expect(game).toMatchScreenSnapshot('masked', { ...opts, timeout: 300 }), /E2E TEST FAILED/);
+  await expect(game).toMatchScreenSnapshot('masked', { ...opts, maxDiffCells: 2, timeout: 300 });
+  await assert.rejects(expect(game).toMatchScreenSnapshot('masked', { ...opts, maxDiffCells: 1, timeout: 300 }), /E2E TEST FAILED/);
+});
+
 test('expectState polls an external state file the target app writes, independent of screen text', async ({ game }) => {
   await game.expectText('MENU NAV APP');
   await game.type('1');
@@ -102,17 +163,13 @@ test('expectState polls an external state file the target app writes, independen
   await game.press('ENTER');
   await game.expectText('PLAYING');
 
-  // Confirming each press's effect before sending the next, rather than
-  // firing all three unawaited: rapid consecutive writes can be coalesced
-  // by the OS into a single read on the child's end before it's processed,
-  // and Ink treats a multi-character chunk as one "paste" rather than N
-  // separate keystrokes -- a real PTY/terminal characteristic, not
-  // something RPGWright should (or safely could) paper over.
-  await game.press.raw(' ');
-  await game.expectText('Score: 1');
-  await game.press.raw(' ');
-  await game.expectText('Score: 2');
-  await game.press.raw(' ');
+  // Rapid consecutive writes can be coalesced by the OS into a single read
+  // on the child's end, and Ink treats a multi-character chunk as one
+  // "paste" rather than N keystrokes. settle lets each press land and
+  // render before the next is sent.
+  await game.press.raw(' ', { settle: true });
+  await game.press.raw(' ', { settle: true });
+  await game.press.raw(' ', { settle: true });
   await game.expectText('Score: 3');
 
   await expect(game).toHaveState(async () => readState(), (state) => state.score === 3 && state.screen === 'play');
@@ -150,7 +207,8 @@ test('a full navigation scenario — menu to play to menu to settings to quit', 
   await game.press('ESCAPE');
   await game.expectText('MENU NAV APP');
 
-  await game.press('ARROWDOWN');
+  // Settle so the arrow and the Enter can't reach the app as one read.
+  await game.press('ARROWDOWN', { settle: true });
   await game.press('ENTER');
   await game.expectText('SETTINGS');
   await game.press('ESCAPE');

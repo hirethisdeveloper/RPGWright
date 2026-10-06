@@ -25,6 +25,15 @@ npx rpgwright test
 
 `rpgwright init` scaffolds a config and a self-contained example that passes immediately, so you can see the tool work before wiring it up to your own app.
 
+## What you can test
+
+- **What's on screen**: text, whole screens, and snapshots that can include colors and highlights, with a row-by-row diff when they don't match.
+- **Where it is and how it's drawn**: positions, alignment, gaps, overlap, clipping, colors, and which item has focus, at as many terminal sizes as you like.
+- **How it behaves**: keystrokes and key chords, pastes, mouse clicks and scrolling, signals and exit codes, plus the window title, bell, links and clipboard writes.
+- **When it fails**: a report with the screen and every action, and optional HTML traces and replayable recordings of the whole session.
+
+Tests are written like Playwright Test's, in JavaScript or TypeScript, with fixtures, hooks, retries, parallel workers and CI reporters.
+
 ## Documentation
 
 Full documentation lives in [`docs/`](./docs/intro.md):
@@ -34,6 +43,7 @@ Full documentation lives in [`docs/`](./docs/intro.md):
 - [Configuration reference](./docs/configuration.md)
 - [CLI reference](./docs/cli.md)
 - [Assertions](./docs/assertions.md)
+- [Layout and focus](./docs/layout-and-focus.md)
 - [Key sequences](./docs/key-sequences.md)
 - [Diagnostics](./docs/diagnostics.md)
 - [Best practices](./docs/best-practices.md)
