@@ -61,3 +61,66 @@ test('pty: waitForExit() resolves immediately once the process has already exite
   const exitInfo = await p.waitForExit();
   assert.equal(exitInfo.exitCode, 0);
 });
+
+const { spawnPipe } = require('../src/pty');
+
+test('spawnPipe: same handle shape, the child sees no TTY, and stdout and stderr are merged', { timeout: 10000 }, async () => {
+  const handle = spawnPipe({
+    command: process.execPath,
+    args: ['-e', "process.stdout.write('isTTY=' + Boolean(process.stdout.isTTY) + '\\n'); process.stderr.write('to stderr\\n'); process.stdin.on('data', (d) => { process.stdout.write('echo ' + d); process.exit(4); });"],
+  });
+  for (const method of ['onData', 'write', 'resize', 'waitForExit', 'getExitInfo', 'kill']) assert.equal(typeof handle[method], 'function', method);
+  let output = '';
+  handle.onData((chunk) => {
+    output += chunk;
+  });
+  while (!output.includes('to stderr')) await new Promise((r) => setTimeout(r, 10));
+  assert.match(output, /isTTY=false/);
+  assert.equal(handle.getExitInfo(), null);
+  handle.write('hi\n');
+  assert.deepEqual(await handle.waitForExit(), { exitCode: 4, signal: null });
+  assert.match(output, /echo hi/);
+  assert.deepEqual(await handle.waitForExit(), { exitCode: 4, signal: null }, 'resolves again once exited');
+});
+
+test('spawnPipe: kill() reports the signal as a number; a missing command exits 127', async () => {
+  const sleeper = spawnPipe({ command: process.execPath, args: ['-e', 'setTimeout(() => {}, 10000)'] });
+  sleeper.kill('SIGTERM');
+  assert.deepEqual(await sleeper.waitForExit(), { exitCode: 0, signal: 15 });
+
+  const missing = spawnPipe({ command: '/nonexistent/command' });
+  assert.equal((await missing.waitForExit()).exitCode, 127);
+});
+
+test('spawnPipe: a multi-byte character split across two chunks decodes cleanly', async () => {
+  const handle = spawnPipe({
+    command: process.execPath,
+    args: ['-e', "const b = Buffer.from('─'); process.stdout.write(b.subarray(0, 1)); setTimeout(() => process.stdout.write(b.subarray(1)), 50);"],
+  });
+  let output = '';
+  handle.onData((chunk) => {
+    output += chunk;
+  });
+  await handle.waitForExit();
+  assert.equal(output, '─');
+});
+
+test('spawnPipe: the exit is reported while a process it started still holds the pipes, and kill() reaches that process too', { timeout: 10000 }, async () => {
+  const handle = spawnPipe({ command: 'sh', args: ['-c', 'sleep 30 & echo "pid=$!"'] });
+  let output = '';
+  handle.onData((chunk) => {
+    output += chunk;
+  });
+  const exitInfo = await handle.waitForExit();
+  assert.deepEqual(exitInfo, { exitCode: 0, signal: null });
+  const sleeper = Number(/pid=(\d+)/.exec(output)[1]);
+  assert.doesNotThrow(() => process.kill(sleeper, 0), 'the background process is still running');
+  handle.kill('SIGKILL');
+  await new Promise((r) => setTimeout(r, 100));
+  assert.throws(() => process.kill(sleeper, 0), /ESRCH/, 'kill() signalled the whole process group');
+});
+
+test('spawnPipe: a command that cannot be started keeps the reason', async () => {
+  const missing = spawnPipe({ command: '/nonexistent/command' });
+  assert.match((await missing.waitForExit()).error, /ENOENT/);
+});

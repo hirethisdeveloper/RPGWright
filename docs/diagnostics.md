@@ -9,6 +9,7 @@ E2E TEST FAILED
 ────────────────────────────────
 
 Scenario: reaches settings
+Viewport: 80x24
 
 Last action:
   expectText("Settings")
@@ -35,11 +36,13 @@ Actions:
 ```
 
 - **Scenario** — the failing test's name, when run through `rpgwright test` (or whatever you passed as `scenarioName` to `launchGame()` directly).
-- **Last action** / **Expected** — what was being waited for when it failed.
+- **Viewport** — the terminal's size (columns x rows) at the moment of failure, including any `resize()` the test made. Layout bugs are often size-specific, so this tells you which size to reproduce at.
+- **Last action** / **Expected** — what was being waited for when it failed. Layout and focus assertions add an `Observed:` line with the actual positions or styles (see [Layout and focus](./layout-and-focus.md#failure-output)).
+- **Diff** — only for snapshot and exact-screen comparisons: the expected screen against the actual one, row by row, with `^` under each changed character, plus any style differences for styled snapshots (see [Assertions](./assertions.md)).
 - **Current screen** — the *actual* full visible screen at the moment of failure, exactly as `getScreenText()` would return it. This is usually the fastest way to spot the real problem — see [Best practices](./best-practices.md#assert-against-whats-actually-on-screen-not-what-you-assume-is-there) for a real example where this field immediately revealed the actual gap.
 - **PTY exit code** — `still running`, or the process's actual exit code/signal. A process that already exited when you expected it to still be running (or vice versa) is often the real bug.
 - **Diagnostics** — your `getDiagnostics` hook's output, or an explicit note that none was configured (see below).
-- **Actions** — the complete history of every `press`/`type`/`expect*` call so far, in order, with the one that failed marked.
+- **Actions** — the complete history of every `press`/`type`/`expect*` call so far, in order, with the one that failed marked. Actions inside a `test.step()` are indented under the step's name.
 
 Because this is just an `Error.message`, it prints correctly in any test runner's default output with zero custom reporter — `rpgwright test`'s own reporter, `node:test`, Jest, Mocha, all show it as-is.
 
@@ -74,3 +77,48 @@ console.log(game.actions);
 ```
 
 Useful for a quick sanity check mid-test, or from a `console.log` you add temporarily while figuring out why a new scenario isn't behaving as expected.
+
+## Traces
+
+The failure report shows the screen at the moment of failure. A **trace** shows it at every step: an HTML file with each action in order, the screen as it looked when that action finished (drawn with its colors, highlights and cursor), the failure report, and the final screen. Open it in any browser; it needs no network access or scripts.
+
+```bash
+npx rpgwright test --trace retain-on-failure   # a trace for each failing test
+npx rpgwright test --trace on                  # a trace for every test
+```
+
+Or set it in `rpgwright.config.js`:
+
+```js
+module.exports = {
+  command: 'node',
+  args: ['bin/my-cli-app.js'],
+  trace: 'retain-on-failure', // 'off' (default), 'on', or 'retain-on-failure'
+  outputDir: 'test-results',  // the default; relative to the config file
+};
+```
+
+Traces are written to `outputDir` as `<test file>--<test name>.trace.html` (the test file's path under `testDir`; if two tests in a run would get the same name, the later one gets a `-2`, `-3`, … suffix). A test that starts more than one process (with `launch()`) gets a trace for each, the second named `<test name> (process 2)` and so on, and a failing test's report ends with the trace's path:
+
+```
+Trace: /home/me/my-app/test-results/menu-rpg-test--opens-settings.trace.html
+```
+
+Next to each trace, RPGWright writes a recording of the whole session in [asciinema](https://asciinema.org)'s `.cast` format, and the failure report gives its path on a `Recording:` line. `asciinema play test-results/<name>.cast` replays it in your terminal at its original speed. The file also records everything the test typed (as input events, which players don't display). A recording plays back what actually happened, including fast redraws that no screenshot would catch.
+
+Add `test-results/` to your `.gitignore`.
+
+## Trace data
+
+`game.getTrace()` returns the data a trace is built from (every action, recent screens as text, the final screen and the exit status), if you want to build your own report. Each action also carries the screen it finished on when the game was launched with `record: true`, which the runner sets whenever traces are on.
+
+## Seeing the screen yourself
+
+`game.renderHtml()` returns the current screen as a standalone HTML page, drawn the way a terminal would draw it. Write it to a file while you're working on a test:
+
+```js
+require('node:fs').writeFileSync('screen.html', game.renderHtml());
+```
+
+Colors are drawn with xterm's default palette. Your users' terminals may show different shades for the same colors; the assertions compare the colors the app asked for, not how they look.
+

@@ -1,11 +1,11 @@
 ---
 name: assertions
-description: waitUntil's event-driven design, waitUntilAbsent's debounced-absence design, pollUntil's poll-based design, the update-emitter contract with terminal.write(), and the §9 failure-report format.
+description: waitUntil's event-driven design, waitUntilAbsent's debounced-absence design, waitForQuiet's screen-settled design, pollUntil's poll-based design, the update-emitter contract with terminal.write(), and the §9 failure-report format.
 ---
 
 # `assertions.js`
 
-Three wait primitives, each suited to a different kind of condition: `waitUntil` (event-driven, wait for something to become true), `waitUntilAbsent` (event-driven, wait for something to become *and stay* false), and `pollUntil` (interval-based, for state with no event source at all). `game.js`'s `expectText`/`expectScreen`/`expectState` all build on exactly one of these rather than reimplementing wait logic per method.
+Four wait primitives, each suited to a different kind of condition: `waitUntil` (event-driven, wait for something to become true), `waitUntilAbsent` (event-driven, wait for something to become *and stay* false), `waitForQuiet` (event-driven, wait for updates to stop), and `pollUntil` (interval-based, for state with no event source at all). The screen and state assertions in `game.js` build on these rather than reimplementing wait logic per method (snapshot recording combines `waitForQuiet` with a comparison; `waitForExit`/`expectExit` wait on the process instead, via `exitWithin`).
 
 ## `waitUntil(onUpdate, predicate, { timeout, exitPromise })`
 
@@ -39,6 +39,12 @@ The actual algorithm (a debounce, driven by the same `onUpdate` events `waitUnti
 3. If `isPresent()` flips true again before the hold timer fires (a delayed/racy reappearance — the exact case `holdFor` exists to catch, per the original spec), the timer is cancelled and the wait resets.
 4. All of this is bounded by the overall `timeout`; if a full `holdFor` streak of absence is never achieved, it rejects with `TimeoutError`. This means a genuine failure (text that never goes away) takes the full `timeout` to report, not an instant fail — a deliberate tradeoff for correctness on the common case. `test/assertions.test.js` covers all four branches: absent-from-the-start, present-then-absent-and-stable, still-present-at-deadline, and reappears-during-the-hold-window.
 
+## `waitForQuiet(onUpdate, { quiet, timeout })`
+
+Backs `GameDriver.waitForStable()` and the `{ settle }` option on `press`/`type`. Resolves once `quiet` ms pass with no update event; every update restarts that timer. It has no predicate: the question is "has the app stopped drawing", not "is X on screen". It's the same debounced-timer shape as `waitUntilAbsent`'s hold window, and it's still event-driven (the timer measures time since the last real update, it doesn't sample the screen). If updates keep arriving until `timeout` (a spinner that never stops), it rejects with `TimeoutError`.
+
+`quiet` defaults to 150ms in `game.js` (`DEFAULT_STABLE_QUIET`). That is longer than a typical Ink render cycle and the gap between chunks of one redraw, and short enough that settling after every keystroke stays cheap. A predicate-based wait (`expectText`) remains the stronger check whenever there's a specific change to wait for; `waitForQuiet` is for when there isn't one (animations, snapshots, "the keystroke has been consumed").
+
 ## `pollUntil(check, { timeout, pollInterval })`
 
 The one legitimate place a bounded `setInterval`-style wait belongs in this codebase, and it backs exactly one thing: `expectState`. Unlike screen text, arbitrary external state (a database row, a file on disk) has no event RPGWright can subscribe to — there is nothing for `waitUntil`'s approach to hook into. `check` is `async () => boolean` (in `game.js`, a closure over the caller's `getState`/`matcher` pair); `pollUntil` awaits it, and if false, sleeps `min(pollInterval, timeRemaining)` before trying again, so it never overshoots `timeout` waiting on a poll that was going to fail anyway.
@@ -48,6 +54,9 @@ The one legitimate place a bounded `setInterval`-style wait belongs in this code
 A pure formatter — no waiting, no side effects, so it's trivially unit-testable in isolation (`test/assertions.test.js` covers the block structure directly without spawning any process). Two things worth knowing if you touch it:
 
 - **It does not synthesize the `launchGame(...)` entry itself.** `actions` is rendered exactly as given; `game.js` is responsible for prepending a synthetic `{ type: 'launchGame', detail: ... }` record ahead of `GameDriver.actions` before calling this, since `GameDriver.actions` (per the design in [[game-driver]]) only tracks `press`/`type`/`expect*` calls, not the launch itself. Keeping that synthesis in `game.js` rather than here keeps this module a dumb, testable formatter.
+- **An optional `viewport` (`{ cols, rows }`) adds a `Viewport:` line** under `Scenario:`. `game.js` always passes the terminal's size at failure time rather than the launch size, so it stays accurate after a `resize()`.
+- **An optional `diff` adds a `Diff (- expected, + actual):` section** between `Expected:` and `Current screen:`. `formatScreenDiff(expected, actual)` builds the row diff (matching rows once, differing rows as `-`/`+` pairs with a caret line under changed characters, counted by code point so emoji don't misalign); `formatLineSetDiff` builds the order-insensitive style diff. Both are pure and live here next to the report they feed. `expected` is indented line by line, so callers can pass multi-line text (layout assertions add an `Observed:` line).
+- **Action records may carry a `depth`.** `game.step()` increments a depth counter while its callback runs, and every action recorded meanwhile is stamped with it. The formatter indents each action line two spaces per depth level, so a step's actions render nested under the step's own line. Records without `depth` render at the top level, which keeps synthetic records (like the `launchGame` entry) and older callers working unchanged.
 - **The no-diagnostics-hook note is the default, not a special case.** `extraDiagnostics` falsy → the exact §9 wording ships automatically; callers never need to construct that sentence themselves.
 
 The exact block shape (header, `Scenario:`, `Last action:`, `Expected:`, `Current screen:`, `PTY exit code:`, `Diagnostics:`, numbered `Actions:` with a `← failed after this action` marker on the failed entry) is asserted line-by-line in both `test/assertions.test.js` (synthetic input) and `test/game.test.js` (a real failing `expectText` against the real fixture) — the latter is a permanent regression test, not a one-off manual check, per the Phase 1 exit gate requirement that the formatter be proven against an actual failure, not just inspected once and trusted.

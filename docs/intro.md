@@ -62,3 +62,5 @@ Change `command`/`args` to whatever launches your real application (for an Ink a
 - **[Configuration](./configuration.md)** — every `rpgwright.config.js` option.
 - **[CLI reference](./cli.md)** — `rpgwright init` and `rpgwright test` in full, including flags and exit codes.
 - **[Assertions](./assertions.md)** — a deeper look at each `expect*` method, including snapshot testing and waiting on external state.
+- **TypeScript** — name test files `*.rpg.test.ts`; types ship with the package. See [Writing tests](./writing-tests.md#typescript).
+- **[Layout and focus](./layout-and-focus.md)** — locators, and assertions about position, alignment, overlap, clipping, style and focus.

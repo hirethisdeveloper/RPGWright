@@ -17,6 +17,8 @@ RPGWright's own test suite runs on **two** runners, on purpose, for two differen
 
 `test/rpg/minimal/basic.rpg.test.js` and `test/rpg/menu-nav/navigation.rpg.test.js` are the Phase 3 port of what used to be `test/game.test.js` and `test/menu-nav.test.js` — hand-rolled `node:test` files that manually called `launchGame()`/`game.stop()` around every test. They're exactly the shape of test a real consumer would write (`test(name, async ({ game }) => {...})`, `expect(game).toX()`), run via `rpgwright test --config test/rpg/<suite>/rpgwright.config.js`, against the real bundled fixtures. Porting real, substantial test content — not throwaway examples — is what actually proves the runner/CLI/config stack works end to end; a trivial synthetic test could pass while missing real issues a full scenario suite exercises (multi-screen navigation, snapshots, external state, resizing).
 
+`test/rpg/term-probe/terminal.rpg.test.js` is the third suite. It runs against `fixtures/term-probe`, a dependency-free raw-mode script with one behavior per mode argument (`query`, `env`, `echo`, `spinner`, `prompt`, `toast`, `redraw`, `mouse`, `paste`, `signals`, `exit`, `log`), for terminal-level behavior an Ink app can't produce on demand: query replies, exact key-chord bytes, environment variables, endless redraws. Each `describe` picks its mode with `test.use({ args: [PROBE, '<mode>'] })`, which also dogfoods `test.use`. New terminal-level behaviors get a new mode in that one fixture rather than a new fixture. Every mode must enable raw mode (attach its stdin listener) *before* writing anything: three modes originally printed their prompt first, and a test that typed right after seeing it intermittently got its keystrokes twice (`Name: AlAl`), because the tty line discipline echoed them in cooked mode and then delivered them again once raw mode started. It's the same mount-time race [[game-driver]] documents for Ink apps, and it only showed up as a roughly 1-in-10 flake under repeated full-suite runs. Runner features (hooks, `only`, `fail`, CLI flags) are covered as CLI black-box tests in `runner-e2e.test.js`, using throwaway projects that point at the same probe fixture because it launches in a few milliseconds.
+
 Each dogfood suite gets its **own** `rpgwright.config.js` because a single config can only point at one `command` — `fixtures/minimal-ink-app` and `fixtures/menu-nav-ink-app` are two different target apps, so they run as two separate `rpgwright test` invocations (`npm run test:e2e` runs both in sequence). This isn't a limitation specific to testing RPGWright itself — any real consumer with more than one target app under test would do the same thing.
 
 These suites can `require('rpgwright/test')` directly (rather than a relative path into `runner/`) because they live inside RPGWright's own package directory, where Node's package self-referencing resolves the package's own name via its own `"exports"` map — see [[runner]] for the mechanism.
@@ -45,3 +47,11 @@ npm test            # node:test (internals + CLI black-box tests) then both rpgw
 npm run test:unit   # node:test only
 npm run test:e2e    # both rpgwright test dogfood suites only
 ```
+
+## Checks that stand in for tools RPGWright doesn't depend on
+
+Two Tier 3 features would normally be verified by tools outside this repo's two runtime dependencies:
+
+- **TypeScript declarations** (`types/`) are hand-written. Without a TypeScript compiler in the repo, `test/types.test.js` checks them structurally against the running code (exports, driver methods, matchers, locator methods), and `runner-e2e.test.js` runs a real `.ts` test file through the CLI on Node's built-in type stripping. Neither proves the declarations type-check; a `tsc --noEmit` pass over a sample test would, and needs `typescript` as a devDependency.
+- **`.cast` recordings** aren't played back with asciinema. Instead `runner-e2e.test.js` replays a recording's output and resize events through a fresh `createVirtualTerminal` and requires the result to equal the test's final screen, which is the property that matters.
+

@@ -18,4 +18,11 @@ module.exports = {
   rows: 12,
   env: { ...process.env, STATE_FILE: stateFile },
   snapshotsDir,
+  // Sizes for test.eachViewport: below, at, and well above the fixture's
+  // 60-column side-panel threshold.
+  viewports: [
+    { cols: 40, rows: 12 },
+    { cols: 60, rows: 16 },
+    { name: 'wide', cols: 100, rows: 30 },
+  ],
 };

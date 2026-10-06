@@ -31,3 +31,10 @@ test('stop() does not leak an unhandled promise rejection across repeated launch
 
   assert.deepEqual(rejections, []);
 });
+
+test('launchGame rejects an unknown colorDepth before spawning anything', async () => {
+  await assert.rejects(
+    launchGame({ command: process.execPath, args: [FIXTURE_MINIMAL], colorDepth: 'sepia' }),
+    /Unknown colorDepth "sepia"\. Supported: 16, 256, none, truecolor/,
+  );
+});
