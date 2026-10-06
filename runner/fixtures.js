@@ -38,8 +38,9 @@ function splitTopLevel(text, separator) {
  * The fixture names a test, hook or fixture function destructures from its
  * first parameter, read from its source the way Playwright Test does:
  * `async ({ game, tmpHome }) => ...` -> ['game', 'tmpHome']. Returns null
- * when that can't be determined (a non-destructured or rest parameter), in
- * which case every fixture is provided.
+ * when that can't be determined (a non-destructured or rest parameter): a
+ * test or hook then gets every fixture (see resolveAll), a fixture
+ * definition none.
  */
 function requestedFixtures(fn) {
   const source = Function.prototype.toString.call(fn).replace(/^async\s*/, '');
@@ -55,10 +56,14 @@ function requestedFixtures(fn) {
     params = source.slice(open + 1, close);
   } else {
     // A bare single-parameter arrow (`fixtures => ...`): not destructured.
-    return source.startsWith('=>') ? [] : null;
+    return null;
   }
 
-  const first = splitTopLevel(params, ',')[0].trim();
+  // Comments can't hold fixture names; a `//` right after `:` is a URL in a
+  // default value, not a comment.
+  params = params.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[\s,{])\/\/[^\n]*/g, '$1');
+  // The pattern without a default for the whole parameter (`({ a } = {})`).
+  const first = splitTopLevel(splitTopLevel(params, ',')[0], '=')[0].trim();
   if (first === '') return [];
   if (!first.startsWith('{')) return null;
   const pattern = first.slice(1, first.lastIndexOf('}'));
@@ -80,17 +85,36 @@ function requestedFixtures(fn) {
  * A definition is either a plain value or
  * `async ({ ...deps }, use, testInfo) => { setup; await use(value); cleanup }`.
  */
-function createFixtureScope({ defs = {}, launchOptions, testInfo, onGame }) {
+function createFixtureScope({ defs = {}, launchOptions, testInfo }) {
   const values = new Map();
   const pending = new Map();
   const teardowns = [];
+  // Every process launched for this test (the game fixture and launch()
+  // alike), in launch order: each gets a trace and test.step's grouping.
+  const games = [];
   // Everything the run asked for, known before anything is created, so the
   // game can tell whether to launch with an isolated HOME regardless of the
   // order in which fixtures were destructured.
   const requested = new Set();
+  let closed = false;
 
+  // Registers how to undo something just set up. Once teardown has started
+  // (a test that timed out keeps running in the background), nothing would
+  // ever run it, so it's undone straight away and the caller fails.
+  async function onTeardown(undo) {
+    if (!closed) {
+      teardowns.push(undo);
+      return;
+    }
+    await undo();
+    throw new Error('This test already finished (it timed out), so a fixture it set up afterwards was torn down straight away.');
+  }
+
+  // `names` null (a test or hook that doesn't destructure) means every
+  // fixture except tmpHome: setting it up changes the game's HOME, which
+  // must not depend on how a parameter happens to be written.
   function resolveAll(names) {
-    const wanted = names === null ? [...BUILTIN_FIXTURES, ...Object.keys(defs)] : names;
+    const wanted = names === null ? [...BUILTIN_FIXTURES.filter((name) => name !== 'tmpHome'), ...Object.keys(defs)] : names;
     wanted.forEach((name) => requested.add(name));
     return Promise.all(wanted.map((name) => resolve(name, []))).then(() => {
       const out = {};
@@ -122,7 +146,8 @@ function createFixtureScope({ defs = {}, launchOptions, testInfo, onGame }) {
     const home = await homeDir();
     const env = { ...(options.env || process.env), ...(home ? { HOME: home } : {}) };
     const game = await launchGame({ ...options, env });
-    teardowns.push(() => game.stop().catch(() => {}));
+    await onTeardown(() => game.stop().catch(() => {}));
+    games.push(game);
     return game;
   }
 
@@ -131,18 +156,15 @@ function createFixtureScope({ defs = {}, launchOptions, testInfo, onGame }) {
     switch (name) {
       case 'tmpHome': {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-home-'));
-        teardowns.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+        await onTeardown(() => fs.rmSync(dir, { recursive: true, force: true }));
         for (const [file, content] of Object.entries(launchOptions.homeFiles || {})) {
           fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
           fs.writeFileSync(path.join(dir, file), content);
         }
         return dir;
       }
-      case 'game': {
-        const game = await launch(launchOptions);
-        if (onGame) onGame(game);
-        return game;
-      }
+      case 'game':
+        return launch(launchOptions);
       case 'viewport': {
         if (testInfo.viewport) return testInfo.viewport;
         const size = (await resolve('game', chain)).getSize();
@@ -184,7 +206,7 @@ function createFixtureScope({ defs = {}, launchOptions, testInfo, onGame }) {
         throw new Error(`Fixture "${name}" finished without calling use(value).`);
       }),
     ]);
-    teardowns.push(async () => {
+    await onTeardown(async () => {
       release();
       await run;
     });
@@ -192,6 +214,7 @@ function createFixtureScope({ defs = {}, launchOptions, testInfo, onGame }) {
   }
 
   async function teardown() {
+    closed = true;
     let firstError = null;
     while (teardowns.length) {
       try {
@@ -203,7 +226,7 @@ function createFixtureScope({ defs = {}, launchOptions, testInfo, onGame }) {
     if (firstError) throw firstError;
   }
 
-  return { resolveAll, teardown, get: (name) => values.get(name) };
+  return { resolveAll, teardown, games };
 }
 
 module.exports = { BUILTIN_FIXTURES, requestedFixtures, splitTopLevel, createFixtureScope };

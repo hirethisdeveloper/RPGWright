@@ -39,6 +39,17 @@ test('slugify / tracePath: a stable, filesystem-safe name per file and test', ()
   assert.equal(tracePath('/out', '/x/menu.rpg.test.js', 'opens'), path.join('/out', 'menu-rpg-test--opens.trace.html'));
 });
 
+test('tracePath: names stay unique within a run: the path under testDir, .ts stripped, and numbered collisions', () => {
+  const naming = { testDir: '/x', taken: new Set() };
+  assert.equal(tracePath('/out', '/x/a/menu.rpg.test.js', 'opens', naming), path.join('/out', 'a-menu-rpg-test--opens.trace.html'));
+  assert.equal(tracePath('/out', '/x/b/menu.rpg.test.ts', 'opens', naming), path.join('/out', 'b-menu-rpg-test--opens.trace.html'));
+  // A retry whose "(retry 1)" falls past the slug's cap would otherwise
+  // overwrite the first attempt's trace.
+  const long = 'x'.repeat(90);
+  assert.equal(tracePath('/out', '/x/m.rpg.test.js', long, naming), path.join('/out', `m-rpg-test--${'x'.repeat(80)}.trace.html`));
+  assert.equal(tracePath('/out', '/x/m.rpg.test.js', `${long} (retry 1)`, naming), path.join('/out', `m-rpg-test--${'x'.repeat(80)}-2.trace.html`));
+});
+
 test('buildTraceHtml: outcome, escaped failure report, nested actions with screens, the failed ones open', async () => {
   const html = buildTraceHtml({
     testName: 'opens <settings>',

@@ -113,4 +113,4 @@ ${renderScreenFragment(grid, cursor)}
 `;
 }
 
-module.exports = { renderScreenFragment, renderScreenHtml, paletteColor, escapeHtml, SCREEN_CSS, THEME };
+module.exports = { renderScreenFragment, renderScreenHtml, paletteColor, escapeHtml, SCREEN_CSS };

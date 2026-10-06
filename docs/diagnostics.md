@@ -98,19 +98,19 @@ module.exports = {
 };
 ```
 
-Traces are written to `outputDir` as `<test file>--<test name>.trace.html`, and a failing test's report ends with the trace's path:
+Traces are written to `outputDir` as `<test file>--<test name>.trace.html` (the test file's path under `testDir`; if two tests in a run would get the same name, the later one gets a `-2`, `-3`, … suffix). A test that starts more than one process (with `launch()`) gets a trace for each, the second named `<test name> (process 2)` and so on, and a failing test's report ends with the trace's path:
 
 ```
 Trace: /home/me/my-app/test-results/menu-rpg-test--opens-settings.trace.html
 ```
 
-Next to each trace, RPGWright writes a recording of the whole session in [asciinema](https://asciinema.org)'s `.cast` format, and the failure report gives its path on a `Recording:` line. `asciinema play test-results/<name>.cast` replays it in your terminal at its original speed, including everything the test typed. A recording plays back what actually happened, including fast redraws that no screenshot would catch.
+Next to each trace, RPGWright writes a recording of the whole session in [asciinema](https://asciinema.org)'s `.cast` format, and the failure report gives its path on a `Recording:` line. `asciinema play test-results/<name>.cast` replays it in your terminal at its original speed. The file also records everything the test typed (as input events, which players don't display). A recording plays back what actually happened, including fast redraws that no screenshot would catch.
 
 Add `test-results/` to your `.gitignore`.
 
 ## Trace data
 
-`game.getTrace()` returns the data a trace is built from (every action with the screen it finished on, recent screens as text, the final screen and the exit status), if you want to build your own report.
+`game.getTrace()` returns the data a trace is built from (every action, recent screens as text, the final screen and the exit status), if you want to build your own report. Each action also carries the screen it finished on when the game was launched with `record: true`, which the runner sets whenever traces are on.
 
 ## Seeing the screen yourself
 

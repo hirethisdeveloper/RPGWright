@@ -15,6 +15,8 @@ const {
   formatFailureReport,
   formatScreenDiff,
   formatLineSetDiff,
+  formatNeedle,
+  matchesNeedle,
 } = require('./assertions');
 const { KEY_SEQUENCES, resolveKey, encodeMouse } = require('./keys');
 const { renderScreenHtml } = require('./render');
@@ -66,23 +68,6 @@ function settleQuiet(settle) {
   return typeof settle === 'number' ? settle : DEFAULT_STABLE_QUIET;
 }
 
-function formatNeedle(needle) {
-  return needle instanceof RegExp ? needle.toString() : JSON.stringify(needle);
-}
-
-function matchesNeedle(screenText, needle) {
-  if (needle instanceof RegExp) {
-    // Reset lastIndex before every check: a needle constructed with the
-    // 'g' or 'y' flag otherwise carries match position across repeated
-    // calls (waitUntil/waitUntilAbsent re-check the same needle on every
-    // screen update), making "does this appear right now" depend on how
-    // many times it's already been checked rather than the current screen.
-    needle.lastIndex = 0;
-    return needle.test(screenText);
-  }
-  return screenText.includes(needle);
-}
-
 function formatArg(arg) {
   if (arg && arg._isLocator) return arg.describe();
   if (arg instanceof RegExp) return arg.toString();
@@ -98,8 +83,10 @@ function formatExit(info) {
   return info.signal ? `signal ${info.signal}` : `exit code ${info.exitCode}`;
 }
 
+// An exit code only counts for a process that exited on its own: one killed
+// by a signal also reports exit code 0, which must not pass { code: 0 }.
 function exitMatches(info, want) {
-  if (want.code !== undefined && info.exitCode !== want.code) return false;
+  if (want.code !== undefined && (info.signal || info.exitCode !== want.code)) return false;
   if (want.signal !== undefined && signalNumber(info.signal) !== signalNumber(want.signal)) return false;
   return true;
 }
@@ -232,17 +219,26 @@ async function launchGame({
     if (frames.length > historySize) frames.shift();
   }
 
+  let parsed = Promise.resolve();
   const dataSubscription = ptyHandle.onData((chunk) => {
     // stop() disposes this subscription before disposing the terminal, but
     // a chunk already in flight when that happens could still resolve (or
     // throw, via the Promise constructor) afterward — .catch keeps that
     // from surfacing as an unhandled rejection.
     recordEvent('o', chunk);
-    terminal
+    parsed = terminal
       .write(chunk, recordFrame)
       .then(() => updates.emit(UPDATE_EVENT))
       .catch(() => {});
   });
+
+  // The process's exit, once every chunk it wrote has been parsed. The
+  // handle can report an exit while its last output is still queued in the
+  // terminal (xterm parses asynchronously), so anything deciding "it exited
+  // without showing X" must wait for that output first.
+  function exitedAndParsed() {
+    return ptyHandle.waitForExit().then((info) => parsed.then(() => info));
+  }
 
   const replySubscription = terminal.onReply((reply) => {
     if (!ptyHandle.getExitInfo()) ptyHandle.write(reply);
@@ -254,8 +250,9 @@ async function launchGame({
   }
 
   // `frame` is how many frames had been recorded when the action started;
-  // `screen`/`cursor` are what the screen showed when it finished (the grid
-  // is an immutable snapshot, so holding the reference is free).
+  // with `record`, `screen`/`cursor` are what the screen showed when it
+  // finished. Only kept when recording: each grid is a full styled copy of
+  // the screen, and the action list is unbounded.
   function recordAction(type, detail, ok = null) {
     const record = { type, detail, ok, depth: stepDepth, t: Date.now() - startedAt, frame: frameCount };
     if (!stopped) record.bells = terminal.getSignals().bellCount;
@@ -265,7 +262,7 @@ async function launchGame({
   }
 
   function captureInto(record) {
-    if (stopped) return;
+    if (stopped || !recording) return;
     record.screen = terminal.getScreenCells();
     record.cursor = terminal.getCursor();
   }
@@ -333,7 +330,7 @@ async function launchGame({
   function waitForScreen(predicate, opts) {
     return waitUntil(onUpdate, predicate, {
       timeout: opts.timeout ?? expectTimeout,
-      exitPromise: ptyHandle.waitForExit(),
+      exitPromise: exitedAndParsed(),
     });
   }
 
@@ -342,7 +339,7 @@ async function launchGame({
   // (see agent_docs/game-driver.md on keystroke coalescing).
   function writeInput(bytes) {
     ptyHandle.write(bytes);
-    recordEvent('i', bytes);
+    recordEvent('i', typeof bytes === 'string' ? bytes : bytes.toString('latin1'));
   }
 
   async function send(type, bytes, detail, opts) {
@@ -387,7 +384,10 @@ async function launchGame({
       event.action === 'press' ||
       (event.action === 'release' && mouseTracking !== 'x10') ||
       (event.action === 'move' && (mouseTracking === 'any' || (mouseTracking === 'drag' && event.button !== null)));
-    if (reported) writeInput(encodeMouse(event, mouseEncoding));
+    // Plain X10 reports are single bytes per value, up to 255; as a string
+    // anything past 127 would be sent UTF-8 encoded, as two bytes.
+    const report = reported && encodeMouse(event, mouseEncoding);
+    if (reported) writeInput(mouseEncoding === 'x10' ? Buffer.from(report, 'latin1') : report);
     recordAction('mouse', reported ? detail : `${detail}, not reported in ${mouseTracking} mode`, true);
     if (opts.settle) await waitForStable({ quiet: settleQuiet(opts.settle) });
   }
@@ -443,7 +443,7 @@ async function launchGame({
     const timedOut = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new TimeoutError(`Timed out after ${timeout}ms waiting for the process to exit`)), timeout);
     });
-    return Promise.race([ptyHandle.waitForExit(), timedOut]).finally(() => clearTimeout(timer));
+    return Promise.race([exitedAndParsed(), timedOut]).finally(() => clearTimeout(timer));
   }
 
   async function waitForExit(opts = {}) {
@@ -471,13 +471,20 @@ async function launchGame({
   function terminalState() {
     const signals = terminal.getSignals();
     const input = lastInput();
-    const scrollbackLines = terminal.getScrollbackLines();
+    // Rebuilt on every update while a check waits, so the scrollback (up to
+    // `scrollback` lines) is only read by the check that wants it.
+    let lines = null;
+    const scrollbackLines = () => (lines ??= terminal.getScrollbackLines());
     return {
       modes: terminal.getModes(),
       signals,
       bellsSinceInput: signals.bellCount - (input ? input.bells : 0),
-      scrollback: scrollbackLines.join('\n'),
-      scrollbackLines: scrollbackLines.length,
+      get scrollback() {
+        return scrollbackLines().join('\n');
+      },
+      get scrollbackLines() {
+        return scrollbackLines().length;
+      },
     };
   }
 
@@ -634,9 +641,10 @@ async function launchGame({
     const textPath = path.join(snapshotsDir, `${name}.snap`);
     const stylesPath = path.join(snapshotsDir, `${name}.styles.snap`);
     const shouldRecord = opts.updateSnapshot ?? updateSnapshots;
-    const missing = !fs.existsSync(textPath) || (opts.styles && !fs.existsSync(stylesPath));
+    const textMissing = !fs.existsSync(textPath);
+    const stylesMissing = opts.styles && !fs.existsSync(stylesPath);
 
-    if (shouldRecord || missing) {
+    async function writeSnapshot({ text }) {
       // Recording a frame mid-redraw would bake a half-drawn screen into
       // the snapshot, so wait for the app to stop drawing first.
       if (opts.stable !== false) {
@@ -644,8 +652,20 @@ async function launchGame({
       }
       const capture = captureScreen(opts);
       fs.mkdirSync(snapshotsDir, { recursive: true });
-      fs.writeFileSync(textPath, capture.text, 'utf8');
+      if (text) fs.writeFileSync(textPath, capture.text, 'utf8');
       if (opts.styles) fs.writeFileSync(stylesPath, capture.styles, 'utf8');
+    }
+
+    if (shouldRecord || textMissing) {
+      await writeSnapshot({ text: true });
+      return;
+    }
+    // Only the styles are new (styles: true added to an existing snapshot):
+    // the recorded text must still match before the styles are recorded
+    // beside it, or a text regression would be silently re-recorded.
+    if (stylesMissing) {
+      await matchSnapshot(name, { ...opts, styles: false }, comparison);
+      await writeSnapshot({ text: false });
       return;
     }
 
@@ -785,10 +805,16 @@ async function launchGame({
     const timeout = opts.timeout ?? killTimeout;
     ptyHandle.kill(killSignal);
 
+    // The grace timer is cleared once the process exits, so it can't keep
+    // the caller's event loop alive for the rest of `timeout`.
+    let graceTimer;
     let exitInfo = await Promise.race([
       ptyHandle.waitForExit(),
-      new Promise((resolve) => setTimeout(() => resolve(null), timeout)),
+      new Promise((resolve) => {
+        graceTimer = setTimeout(() => resolve(null), timeout);
+      }),
     ]);
+    clearTimeout(graceTimer);
 
     if (!exitInfo) {
       ptyHandle.kill('SIGKILL');

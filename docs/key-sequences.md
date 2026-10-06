@@ -27,7 +27,7 @@
 
 These are the standard xterm/VT100 sequences a real terminal sends for each key, in the terminal's normal (non-application) cursor-key mode.
 
-Names are case-insensitive, so `'Enter'`, `'ArrowDown'` and `'PageUp'` work as well as `'ENTER'`, `'ARROWDOWN'` and `'PAGEUP'`. A single character such as `'q'` or `'+'` is sent as-is.
+Built-in names are case-insensitive, so `'Enter'`, `'ArrowDown'` and `'PageUp'` work as well as `'ENTER'`, `'ARROWDOWN'` and `'PAGEUP'`. A name you add with `keys` matches exactly as you wrote it, or in any case if you define it in upper case. A single character such as `'q'` or `'+'` is sent as-is.
 
 ## Chords: modifier keys
 

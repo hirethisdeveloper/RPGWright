@@ -20,12 +20,14 @@ test('requestedFixtures: reads destructured names from arrows, async functions a
   assert.deepEqual(requestedFixtures(() => {}), []);
   assert.deepEqual(requestedFixtures(async () => {}), []);
   assert.deepEqual(requestedFixtures(({}) => {}), []);
+  assert.deepEqual(requestedFixtures(({ game /* the app */, url = 'http://localhost' }) => {}), ['game', 'url']);
 });
 
 test('requestedFixtures: null (meaning "everything") when the first parameter is not destructured', () => {
   assert.equal(requestedFixtures((fixtures) => fixtures.game), null);
   assert.equal(requestedFixtures(async (fixtures) => fixtures.game), null);
   assert.equal(requestedFixtures(({ game, ...rest }) => rest), null);
+  assert.equal(requestedFixtures((fixtures) => fixtures), null, 'a bare arrow parameter');
 });
 
 function scope(defs = {}, launchOptions = {}) {
@@ -106,6 +108,31 @@ test('createFixtureScope: game launches with HOME set to tmpHome whichever is de
   }
   assert.notEqual(game.getTrace().exitInfo, null, 'teardown stopped the game');
   assert.notEqual(second.getTrace().exitInfo, null, 'teardown stopped the launched process too');
+});
+
+test('createFixtureScope: a test that does not destructure gets every fixture but tmpHome, so HOME is left alone', async () => {
+  const launchOptions = { command: process.execPath, args: [PROBE, 'env'], cols: 200, rows: 12, expectTimeout: 3000 };
+  const s = scope({}, launchOptions);
+  try {
+    const fixtures = await s.resolveAll(null);
+    assert.deepEqual(Object.keys(fixtures).sort(), ['game', 'launch', 'testInfo', 'viewport']);
+    await fixtures.game.expectText(`HOME=${process.env.HOME}`);
+  } finally {
+    await s.teardown();
+  }
+});
+
+test('createFixtureScope: anything set up after teardown started is torn down at once, and the caller fails', async () => {
+  const removed = [];
+  const s = scope({
+    late: async ({}, use) => {
+      await use('value');
+      removed.push('late');
+    },
+  });
+  await s.teardown();
+  await assert.rejects(s.resolveAll(['late']), /already finished/);
+  assert.deepEqual(removed, ['late']);
 });
 
 test('BUILTIN_FIXTURES lists what every test can request', () => {

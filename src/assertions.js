@@ -279,4 +279,23 @@ function formatFailureReport({
   ].join('\n');
 }
 
-module.exports = { TimeoutError, waitUntil, waitUntilAbsent, waitForQuiet, pollUntil, formatFailureReport, formatScreenDiff, formatLineSetDiff, indent };
+// How a text needle (a substring, or a RegExp) is shown in reports, and
+// whether it matches: the one implementation every assertion shares.
+function formatNeedle(needle) {
+  return needle instanceof RegExp ? needle.toString() : JSON.stringify(needle);
+}
+
+function matchesNeedle(screenText, needle) {
+  if (needle instanceof RegExp) {
+    // Reset lastIndex before every check: a needle constructed with the
+    // 'g' or 'y' flag otherwise carries match position across repeated
+    // calls (waitUntil/waitUntilAbsent re-check the same needle on every
+    // screen update), making "does this appear right now" depend on how
+    // many times it's already been checked rather than the current screen.
+    needle.lastIndex = 0;
+    return needle.test(screenText);
+  }
+  return screenText.includes(needle);
+}
+
+module.exports = { TimeoutError, formatNeedle, matchesNeedle, waitUntil, waitUntilAbsent, waitForQuiet, pollUntil, formatFailureReport, formatScreenDiff, formatLineSetDiff, indent };

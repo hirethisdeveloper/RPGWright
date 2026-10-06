@@ -149,7 +149,9 @@ const MOUSE_MODIFIERS = { shift: 4, alt: 8, ctrl: 16 };
  * - 'sgr' (?1006): ESC [ < code ; x ; y M, or a final "m" on release
  * - 'urxvt' (?1015): ESC [ code+32 ; x ; y M
  * - 'x10' (the default) and 'utf8' (?1005): ESC [ M then code+32, x+32, y+32
- *   as characters; plain X10 can't express a coordinate past 222
+ *   as characters; plain X10 can't express a coordinate past 222, and its
+ *   characters are single bytes (the caller writes them as latin1, since a
+ *   string would send anything past 127 UTF-8 encoded)
  * `x`/`y` are 0-based cells; reports are 1-based. `action` is 'press',
  * 'release' or 'move'; a move with no button held reports button 3.
  */

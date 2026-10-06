@@ -70,8 +70,8 @@ When a snapshot (or an exact string match) fails, the report includes a row-by-r
 
 ```
 Diff (- expected, + actual):
-                MENU NAV APP
-  ╭───────────╮
+                  MENU NAV APP
+    ╭───────────╮
   - │> Play     │
   + │  Play     │
      ^
@@ -189,7 +189,7 @@ Some of what an app does doesn't appear in the screen's text. These assertions c
 | `toHaveHyperlink(url, { text })` | the app has printed a clickable link (OSC 8) to `url`, optionally with link text `text` (each a string or RegExp) |
 | `toHaveCopied(text)` | the app has copied `text` to the clipboard through the terminal (OSC 52) |
 | `toHaveScrollbackText(text)` | `text` has scrolled off the top of the screen into the scrollback |
-| `toHaveExited({ code, signal })` | the process has ended, with that exit code and/or signal (`'SIGINT'` or a number) |
+| `toHaveExited({ code, signal })` | the process has ended, with that exit code and/or signal (`'SIGINT'` or a number); `code` only matches a process that exited on its own, not one killed by a signal |
 
 ```js
 await expect(game).toHaveTitle('My App — Inventory');

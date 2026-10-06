@@ -102,6 +102,13 @@ test('findBoxes: side-by-side boxes stay separate; nested boxes come innermost f
   assert.deepEqual(layout.findBoxes(nested.grid).map((b) => layout.formatRect(b)), ['(x=1, y=1, 4×3)', '(x=0, y=0, 8×5)']);
 });
 
+test('findBoxes: plus signs in ordinary text are not corners; results are computed once per grid', async () => {
+  const text = await screen(['a+b c+d', 'e+f g+h', 'i+j k+l']);
+  assert.deepEqual(layout.findBoxes(text.grid), []);
+  const box = await screen(['+--+', '|ab|', '+--+']);
+  assert.equal(layout.findBoxes(box.grid), layout.findBoxes(box.grid), 'the same grid is not scanned twice');
+});
+
 test('findBoxes: a panel split by a junction divider yields both halves and the whole', async () => {
   const state = await screen(['┌────┐', '│top │', '├────┤', '│bot │', '└────┘']);
   assert.deepEqual(layout.findBoxes(state.grid).map((b) => layout.formatRect(b)), [
@@ -187,6 +194,7 @@ test('checks: toHaveGap measures blank cells on the separating axis, and asks fo
   const diagonal = check(state, 'toHaveGap', 'Below', [rightLoc, { min: 0 }]);
   assert.equal(diagonal.pass, false);
   assert.match(diagonal.observed, /diagonal/);
+  assert.equal(check(state, 'toHaveGap', 'Below', [rightLoc, { min: 0 }], true).pass, false, 'not.toHaveGap cannot pass on an undefined gap');
   assert.equal(check(state, 'toHaveGap', 'Below', [rightLoc, { min: 1, max: 1, axis: 'y' }]).pass, true);
 });
 
@@ -201,7 +209,8 @@ test('checks: toBeAligned compares edges with another region or the screen; cent
   assert.equal(check(state, 'toBeAligned', 'Title', ['center']).pass, false);
   assert.equal(check(state, 'toBeAligned', { x: 3, y: 0, width: 5, height: 1 }, ['center']).pass, true);
   assert.equal(check(state, 'toBeAligned', { x: 3, y: 0, width: 4, height: 1 }, ['center']).pass, true, 'off by half a cell');
-  assert.match(check(state, 'toBeAligned', 'Title', ['diagonal']).expected, /unknown edge/);
+  assert.throws(() => check(state, 'toBeAligned', 'Title', ['centre']), /unknown edge "centre"/);
+  assert.throws(() => check(state, 'toBeAligned', 'Title', ['centre'], true), /unknown edge "centre"/, 'negated too');
 });
 
 test('checks: toFitWithoutClipping flags terminal auto-wrap and truncation ellipses, not flush-right text', async () => {

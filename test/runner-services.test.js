@@ -44,6 +44,22 @@ test('startService: fails with the service output if it exits first, or if it is
     startService({ name: 'slow', command: node, args: ['-e', "console.log('starting'); setInterval(() => {}, 1000)"], readyText: 'ok', timeout: 300 }),
     /Service "slow" wasn't ready within 300ms\.\nIts last output:\nstarting/,
   );
+  await assert.rejects(startService({ name: 'missing', command: '/nonexistent/server', readyText: 'up' }), /Service "missing" couldn't be started \(spawn \/nonexistent\/server ENOENT\)/);
+});
+
+test('portIsOpen: a server listening on IPv6 localhost only counts as open', async (t) => {
+  const server = net.createServer();
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '::1', resolve);
+    });
+  } catch {
+    t.skip('no IPv6 loopback here');
+    return;
+  }
+  assert.equal(await portIsOpen(server.address().port), true);
+  server.close();
 });
 
 test('startRunEnvironment: setup in order, teardown in reverse; a failure part-way undoes what already started', async () => {

@@ -300,3 +300,13 @@ test('formatFailureReport: adds a Viewport line under Scenario when the size is 
   });
   assert.match(report, /Scenario: fits\nViewport: 80x24\n/);
 });
+
+test('matchesNeedle: substrings and RegExps, with a g/y RegExp giving the same answer however often it is checked', () => {
+  const { matchesNeedle, formatNeedle } = require('../src/assertions');
+  assert.equal(matchesNeedle('server ready', 'ready'), true);
+  const sticky = /ready/g;
+  for (let i = 0; i < 3; i += 1) assert.equal(matchesNeedle('server ready', sticky), true, `check ${i + 1}`);
+  assert.equal(matchesNeedle('starting', /ready/y), false);
+  assert.equal(formatNeedle(/a+/i), '/a+/i');
+  assert.equal(formatNeedle('a "b"'), '"a \\"b\\""');
+});

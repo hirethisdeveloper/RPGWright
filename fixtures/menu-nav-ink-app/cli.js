@@ -5,6 +5,8 @@ import fs from 'node:fs';
 const MENU_OPTIONS = ['Play', 'Settings', 'Quit'];
 const SIDEBAR_MIN_COLS = 60;
 const STATE_FILE = process.env.STATE_FILE;
+// Volatile content for snapshot mask/normalize tests: same length, different text.
+const BUILD_ID = process.env.BUILD_ID || '42';
 
 function writeState(state) {
   if (!STATE_FILE) return;
@@ -166,7 +168,7 @@ function App() {
       `Type a number and press ENTER, or use arrow keys${typedBuffer ? ` (typed: ${typedBuffer})` : ''}`,
     ),
     React.createElement(Text, null, wide ? 'Wide layout enabled' : 'Narrow layout'),
-    React.createElement(Box, { justifyContent: 'flex-end' }, React.createElement(Text, { dimColor: true }, 'build 42')),
+    React.createElement(Box, { justifyContent: 'flex-end' }, React.createElement(Text, { dimColor: true }, `build ${BUILD_ID}`)),
   );
 }
 

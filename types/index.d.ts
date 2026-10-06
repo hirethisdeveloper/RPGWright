@@ -167,6 +167,9 @@ export interface ActionRecord {
   ok: boolean | null;
   depth: number;
   t: number;
+  /** The screen the action finished on; only with `record: true`. */
+  screen?: Cell[][];
+  cursor?: Cursor;
 }
 
 export interface Trace {
@@ -180,7 +183,10 @@ export interface Trace {
 }
 
 export interface GameDriver {
-  press(key: string, options?: ActionOptions): Promise<void>;
+  /** A named key or chord; `press.raw(bytes)` sends bytes exactly as given. */
+  readonly press: ((key: string, options?: ActionOptions) => Promise<void>) & {
+    raw(bytes: string, options?: ActionOptions): Promise<void>;
+  };
   type(text: string, options?: ActionOptions): Promise<void>;
   paste(text: string, options?: ActionOptions): Promise<void>;
   readonly mouse: {
@@ -246,7 +252,7 @@ export interface LaunchOptions {
   focus?: FocusIndicators;
   historySize?: number;
   scrollback?: number;
-  /** Keep an asciinema-style recording of the session (for traces). */
+  /** Keep an asciinema-style recording of the session and each action's screen (for traces). */
   record?: boolean;
   /** false: run with plain pipes instead of a terminal (isTTY is false in the app). */
   tty?: boolean;

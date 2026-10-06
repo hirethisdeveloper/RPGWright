@@ -25,6 +25,15 @@ function normalizeViewports(viewports, resolvedPath) {
   });
 }
 
+// A timeout in ms, 0 meaning none. Anything else (a string like '30s')
+// would become a NaN deadline that fires at once and fails every test.
+function validateTimeout(ms, where) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+    throw new Error(`${where}: "timeout" must be a non-negative number of milliseconds (0 for none), got ${JSON.stringify(ms)}.`);
+  }
+  return ms;
+}
+
 function validateRetries(retries, resolvedPath) {
   if (!Number.isInteger(retries) || retries < 0) {
     throw new Error(`${resolvedPath}: "retries" must be a non-negative integer, got ${JSON.stringify(retries)}.`);
@@ -60,8 +69,10 @@ function validateTrace(mode, resolvedPath) {
 }
 
 /**
- * Locates and loads rpgwright.config.js, then layers on runner-level
- * defaults (testDir/testMatch/timeout). Deliberately does NOT default
+ * Locates and loads rpgwright.config.js, then validates and defaults the
+ * runner-level fields (testDir, testMatch, timeout, reporter, viewports,
+ * trace, retries, workers, services, globalSetup/globalTeardown,
+ * outputDir). Deliberately does NOT default
  * launchGame-specific fields (command, cols, killSignal, ...) here —
  * those stay whatever the config file says (undefined if omitted), and
  * launchGame's own defaults apply when a GameDriver is actually launched.
@@ -97,7 +108,7 @@ function loadConfig({ configPath, cwd = process.cwd() } = {}) {
     configPath: resolvedPath,
     testDir,
     testMatch: userConfig.testMatch || DEFAULT_TEST_MATCH,
-    timeout: userConfig.timeout ?? DEFAULT_TEST_TIMEOUT,
+    timeout: validateTimeout(userConfig.timeout ?? DEFAULT_TEST_TIMEOUT, resolvedPath),
     reporter: userConfig.reporter || DEFAULT_REPORTER,
     viewports: normalizeViewports(userConfig.viewports, resolvedPath),
     trace: validateTrace(userConfig.trace ?? DEFAULT_TRACE, resolvedPath),
@@ -113,10 +124,9 @@ function loadConfig({ configPath, cwd = process.cwd() } = {}) {
 module.exports = {
   loadConfig,
   validateTrace,
+  validateTimeout,
   DEFAULT_CONFIG_FILENAME,
   DEFAULT_TEST_MATCH,
   DEFAULT_TEST_TIMEOUT,
   DEFAULT_REPORTER,
-  DEFAULT_TRACE,
-  TRACE_MODES,
 };

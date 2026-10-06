@@ -125,6 +125,18 @@ test('loadConfig: trace defaults to "off" and outputDir to test-results next to 
   assert.throws(() => loadConfig({ cwd }), /"trace" must be one of off, on, retain-on-failure/);
 });
 
+test('loadConfig: timeout defaults to 30s, accepts 0 for none, and rejects anything but a non-negative number', () => {
+  const cwd = tempDir();
+  fs.writeFileSync(path.join(cwd, 'rpgwright.config.js'), "module.exports = { command: 'node' };");
+  assert.equal(loadConfig({ cwd }).timeout, 30000);
+  fs.writeFileSync(path.join(cwd, 'rpgwright.config.js'), "module.exports = { command: 'node', timeout: 0 };");
+  assert.equal(loadConfig({ cwd }).timeout, 0);
+  for (const bad of ["'30s'", '-1', 'NaN']) {
+    fs.writeFileSync(path.join(cwd, 'rpgwright.config.js'), `module.exports = { command: 'node', timeout: ${bad} };`);
+    assert.throws(() => loadConfig({ cwd }), /"timeout" must be a non-negative number of milliseconds/, bad);
+  }
+});
+
 test('loadConfig: retries defaults to 0 and must be a non-negative integer', () => {
   const cwd = tempDir();
   fs.writeFileSync(path.join(cwd, 'rpgwright.config.js'), "module.exports = { command: 'node' };");

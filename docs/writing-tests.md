@@ -2,7 +2,7 @@
 
 ## The basics
 
-A test file matches `**/*.rpg.test.js` by default (configurable — see [Configuration](./configuration.md#testmatch)) and imports `test`/`expect` from `rpgwright/test`:
+A test file matches `**/*.rpg.test.js` or `**/*.rpg.test.ts` by default (configurable with `testMatch` — see [Configuration](./configuration.md#runner-options)) and imports `test`/`expect` from `rpgwright/test`:
 
 ```js
 const { test, expect } = require('rpgwright/test');
@@ -79,8 +79,8 @@ describe('settings screen', () => {
 });
 ```
 
-- `test.beforeEach(fn)` and `test.afterEach(fn)` run around every test in their scope, and receive the same fixtures as the test (the same `game`, for example). Outer hooks run first for `beforeEach` and last for `afterEach`. `afterEach` runs even when the test failed.
-- `test.beforeAll(fn)` and `test.afterAll(fn)` run once per scope, before its first test and after its last. They don't receive a `game` (each test gets its own), so use them for things like seeding a database or creating a fixture directory. If a `beforeAll` throws, every test in its scope fails with that error, without being launched.
+- `test.beforeEach(fn)` and `test.afterEach(fn)` run around every test in their scope, and receive the same fixtures as the test (the same `game`, for example). Outer hooks run first for `beforeEach` and last for `afterEach`. `afterEach` runs even when the test failed or timed out, before the next test starts.
+- `test.beforeAll(fn)` and `test.afterAll(fn)` run once per scope, before its first test and after its last. They don't receive a `game` (each test gets its own), so use them for things like seeding a database or creating a fixture directory. If a `beforeAll` throws, every test in its scope fails with that error, without being launched. `beforeAll` and `afterAll` hooks have the same timeout as a test in their scope.
 
 Hooks declared at the top of a file apply to every test in that file.
 
@@ -129,7 +129,7 @@ test.eachViewport('the status bar stays on screen', async ({ game, viewport }) =
 
 This runs as `the status bar stays on screen [40x12]`, `[80x24]` and `[wide]`, so the report shows exactly which size failed. To use a list for just one test, pass it first: `test.eachViewport([{ cols: 30, rows: 10 }], name, fn)`.
 
-Every test (and hook) receives `viewport` (`{ name, cols, rows }`) alongside `game`: the eachViewport size, or otherwise the size the test was launched at. Failure reports always include a `Viewport:` line with the terminal's size at the moment of failure.
+Every test (and `beforeEach`/`afterEach` hook) can receive `viewport` (`{ name, cols, rows }`) alongside `game`: the eachViewport size, or otherwise the size the test was launched at. Failure reports always include a `Viewport:` line with the terminal's size at the moment of failure.
 
 ## Focusing, skipping and expected failures
 
@@ -219,7 +219,7 @@ test('shows the inbox', async ({ game, loggedIn }) => {
 
 A fixture is created once per test, the first time the test or one of its hooks asks for it, after the fixtures it depends on. Cleanup runs after the test and its `afterEach` hooks, in reverse order of setup. A plain value works as a fixture too: `base.extend({ apiUrl: 'http://localhost:4000' })`. Built-in fixture names can't be redefined.
 
-RPGWright reads which fixtures a function wants from how it's written (`async ({ game, server }) => …`), as Playwright does. If a test takes its fixtures without destructuring (`async (fixtures) => …`), every fixture is set up.
+RPGWright reads which fixtures a function wants from how it's written (`async ({ game, server }) => …`), as Playwright does. If a test or hook takes its fixtures without destructuring (`async (fixtures) => …`), every fixture is set up except `tmpHome`, which changes the game's `HOME` and so is only set up when a test names it. A fixture definition must destructure the fixtures it depends on; one that doesn't gets none.
 
 ## Retries and repeated runs
 
@@ -250,7 +250,7 @@ test('new game', async ({ game }) => {
 });
 ```
 
-The failure report's action list then shows each step with its actions indented beneath it. `test.step` returns whatever `fn` returns. `test.info()` returns the running test's details (`title`, `titlePath`, `file`, `line`, `timeout`).
+The failure report's action list then shows each step with its actions indented beneath it (for every process the test has started, `game` and `launch()` alike). `test.step` returns whatever `fn` returns. `test.info()` returns the running test's details (`title`, `titlePath`, `file`, `line`, `timeout`).
 
 ## Driving the app: `press` and `type`
 
@@ -425,7 +425,7 @@ await game.expectText('Main Menu');
 await game.stop();
 ```
 
-This path is unsupported and undocumented beyond this note — the bundled runner is what's tested and recommended.
+The bundled runner is what's tested and recommended; outside it you manage launching, stopping and timeouts yourself.
 
 The core package also exports the lower-level pieces RPGWright is built from, for tools built on top of it:
 

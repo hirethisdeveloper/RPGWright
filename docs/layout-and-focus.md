@@ -90,7 +90,7 @@ Wherever an assertion takes another region, you can pass a locator or a plain `{
 | `toFitWithoutClipping()` | its text wasn't cut off (see below) |
 | `toHaveText(needle)` | the text inside the region contains `needle` (a string or RegExp) |
 
-Every assertion accepts `{ timeout }` in its options, and every one except `toHaveCount` has a `not.` form.
+Every assertion accepts `{ timeout }` in its options, and every one except `toHaveCount` and `toHaveExactlyOneFocused` has a `not.` form.
 
 **`toHaveGap`** counts blank cells along the direction in which the regions are apart: columns if they're side by side, rows if one is above the other. If they're diagonal from each other, pass `{ axis: 'x' }` or `{ axis: 'y' }`.
 

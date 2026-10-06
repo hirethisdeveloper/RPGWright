@@ -123,11 +123,12 @@ test('test.setTimeout / test.slow at collection time configure the current scope
   const [t] = rpgTest._collect();
   assert.equal(t.scope.timeout, 5000);
   assert.equal(t.scope.slow, true);
+  assert.throws(() => rpgTest.test.setTimeout('5s'), /test\.setTimeout\(\): "timeout" must be a non-negative number/);
 });
 
 test('test.setTimeout / test.slow inside a running test go to the running test\'s info', () => {
   const calls = [];
-  rpgTest._setCurrentRun({ game: null, info: { setTimeout: (ms) => calls.push(['setTimeout', ms]), slow: () => calls.push(['slow']) } });
+  rpgTest._setCurrentRun({ games: [], info: { setTimeout: (ms) => calls.push(['setTimeout', ms]), slow: () => calls.push(['slow']) } });
   try {
     rpgTest.test.setTimeout(1234);
     rpgTest.test.slow();
@@ -137,11 +138,11 @@ test('test.setTimeout / test.slow inside a running test go to the running test\'
   assert.deepEqual(calls, [['setTimeout', 1234], ['slow']]);
 });
 
-test('test.step delegates to the running game\'s step(); step/info throw outside a running test', async () => {
-  const game = { step: async (name, fn) => `${name}:${await fn()}` };
-  rpgTest._setCurrentRun({ game, info: { title: 'x' } });
+test('test.step delegates to every running game\'s step(); step/info throw outside a running test', async () => {
+  const game = (label) => ({ step: async (name, fn) => `${label}(${name}:${await fn()})` });
+  rpgTest._setCurrentRun({ games: [game('a'), game('b')], info: { title: 'x' } });
   try {
-    assert.equal(await rpgTest.test.step('open', async () => 'done'), 'open:done');
+    assert.equal(await rpgTest.test.step('open', async () => 'done'), 'a(open:b(open:done))');
     assert.deepEqual(rpgTest.test.info(), { title: 'x' });
   } finally {
     rpgTest._setCurrentRun(null);
@@ -210,7 +211,7 @@ test('test.extend: refuses to redefine a built-in fixture', () => {
 });
 
 test('test.step runs fn directly when the running test never launched a game', async () => {
-  rpgTest._setCurrentRun({ game: undefined, info: {} });
+  rpgTest._setCurrentRun({ games: [], info: {} });
   try {
     assert.equal(await rpgTest.test.step('no game', async () => 'ran'), 'ran');
   } finally {

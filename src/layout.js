@@ -11,6 +11,8 @@
  * right edge is x + width (exclusive) and its bottom edge is y + height.
  */
 
+const { formatNeedle, matchesNeedle } = require('./assertions');
+
 // ---------------------------------------------------------------- rects --
 
 function right(r) {
@@ -169,6 +171,13 @@ function edgeIsOpen(grid, y, x1, x2) {
   return true;
 }
 
+// A corner is only a corner if the edge leaving it is drawn: the cells next
+// to it along the edge are border characters. Without this, ASCII '+' in
+// ordinary text ("a+b" on two lines) made boxes.
+function edgeStarts(grid, y, x1, x2) {
+  return BORDER_CHARS.has(grid[y][x1 + 1].ch) && BORDER_CHARS.has(grid[y][x2 - 1].ch);
+}
+
 function boxTitle(grid, y, x1, x2) {
   return grid[y]
     .slice(x1 + 1, x2)
@@ -178,37 +187,59 @@ function boxTitle(grid, y, x1, x2) {
     .replace(/\s+/g, ' ');
 }
 
+// Grids are immutable snapshots (terminal.js replaces, never mutates, its
+// cached grid), so each one's boxes are found once however many locators
+// and checks ask for them on the same screen update.
+const boxCache = new WeakMap();
+
 /**
  * Every rectangle drawn with box-drawing characters, innermost (smallest
  * area) first. Each box is a rect (border included) plus `inner` (the rect
- * inside the border) and `title` (any text drawn into the top edge).
+ * inside the border) and `title` (any text drawn into the top edge, read
+ * on first access). The returned array is shared: copy it before sorting.
  */
 function findBoxes(grid) {
+  if (boxCache.has(grid)) return boxCache.get(grid);
   const boxes = [];
   const rows = grid.length;
-  for (let y = 0; y < rows; y += 1) {
+  for (let y = 0; y + 1 < rows; y += 1) {
     const cols = grid[y].length;
     for (let x = 0; x < cols; x += 1) {
       if (!TOP_LEFT.has(grid[y][x].ch)) continue;
+      const below = grid[y + 1][x].ch;
+      if (!VERTICAL.has(below) && !BOTTOM_LEFT.has(below)) continue;
       for (let x2 = x + 1; x2 < cols; x2 += 1) {
         const ch = grid[y][x2].ch;
-        if (!TOP_RIGHT.has(ch)) continue;
-        if (!edgeIsOpen(grid, y, x, x2)) break;
-        for (let y2 = y + 1; y2 < rows; y2 += 1) {
-          const leftCh = grid[y2][x].ch;
-          const rightCh = grid[y2][x2].ch;
-          if (BOTTOM_LEFT.has(leftCh) && BOTTOM_RIGHT.has(rightCh) && edgeIsOpen(grid, y2, x, x2)) {
-            const box = { x, y, width: x2 - x + 1, height: y2 - y + 1 };
-            box.inner = { x: x + 1, y: y + 1, width: Math.max(0, box.width - 2), height: Math.max(0, box.height - 2) };
-            box.title = boxTitle(grid, y, x, x2);
-            boxes.push(box);
+        if (TOP_RIGHT.has(ch) && edgeStarts(grid, y, x, x2)) {
+          for (let y2 = y + 1; y2 < rows; y2 += 1) {
+            const leftCh = grid[y2][x].ch;
+            const rightCh = grid[y2][x2].ch;
+            if (BOTTOM_LEFT.has(leftCh) && BOTTOM_RIGHT.has(rightCh) && edgeStarts(grid, y2, x, x2) && edgeIsOpen(grid, y2, x, x2)) {
+              boxes.push(makeBox(grid, x, y, x2, y2));
+            }
+            if (!VERTICAL.has(leftCh) || !VERTICAL.has(rightCh)) break;
           }
-          if (!VERTICAL.has(leftCh) || !VERTICAL.has(rightCh)) break;
         }
+        // A pure corner ends this top edge: past it, the scan would be in
+        // the next box.
+        if (PURE_CORNERS.has(ch)) break;
       }
     }
   }
-  return boxes.sort((a, b) => a.width * a.height - b.width * b.height || a.y - b.y || a.x - b.x);
+  boxes.sort((a, b) => a.width * a.height - b.width * b.height || a.y - b.y || a.x - b.x);
+  boxCache.set(grid, boxes);
+  return boxes;
+}
+
+function makeBox(grid, x, y, x2, y2) {
+  const box = { x, y, width: x2 - x + 1, height: y2 - y + 1 };
+  box.inner = { x: x + 1, y: y + 1, width: Math.max(0, box.width - 2), height: Math.max(0, box.height - 2) };
+  let title;
+  Object.defineProperty(box, 'title', {
+    enumerable: true,
+    get: () => (title ??= boxTitle(grid, y, x, x2)),
+  });
+  return box;
 }
 
 // ------------------------------------------------------------- locators --
@@ -250,7 +281,7 @@ function resolveTarget(grid, target) {
   if (target && target.box !== undefined) {
     const boxes = findBoxes(grid);
     const containing = target.box === true ? undefined : target.box.containing;
-    if (containing === undefined) return boxes;
+    if (containing === undefined) return boxes.slice();
     const hits = findText(grid, containing);
     return boxes.filter((box) => hits.some((hit) => contains(box, hit)));
   }
@@ -517,7 +548,7 @@ function focusIndicators(grid, rect, cursor, focus = DEFAULT_FOCUS) {
   const found = [];
   if (focus.marker !== undefined) {
     const prefix = grid[rect.y].slice(0, rect.x).map(cellText).join('');
-    const hit = focus.marker instanceof RegExp ? new RegExp(focus.marker.source, focus.marker.flags.replace(/[gy]/g, '')).test(prefix) : prefix.endsWith(focus.marker);
+    const hit = focus.marker instanceof RegExp ? matchesNeedle(prefix, focus.marker) : prefix.endsWith(focus.marker);
     if (hit) found.push('marker');
   }
   if (focus.style !== undefined && firstStyleMismatch(grid, rect, focus.style) === null) found.push('style');
@@ -637,7 +668,8 @@ const CHECKS = {
         else if (axis === 'y') gap = gy;
         else if (gx >= 0 && gy < 0) gap = gx;
         else if (gy >= 0 && gx < 0) gap = gy;
-        else return { pass: false, note: gx < 0 ? 'they overlap' : 'they are diagonal from each other; pass { axis: "x" } or { axis: "y" }' };
+        else if (gx < 0) return { pass: false, note: 'they overlap' };
+        else return { pass: false, unresolved: true, note: 'they are diagonal from each other; pass { axis: "x" } or { axis: "y" }' };
         return { pass: gap >= min && gap <= max, note: `gap is ${gap}` };
       },
       rect,
@@ -645,9 +677,9 @@ const CHECKS = {
   },
 
   toBeAligned(rect, ctx, edge, { with: other, tolerance } = {}) {
-    if (!EDGES[edge]) {
-      return { pass: false, expected: `to be aligned (unknown edge ${JSON.stringify(edge)}; use ${Object.keys(EDGES).join(', ')})`, observed: '' };
-    }
+    // A typo is a mistake in the test, not a layout that differs: thrown,
+    // so `not.toBeAligned('centre')` can't quietly pass.
+    if (!EDGES[edge]) throw new Error(`toBeAligned: unknown edge ${JSON.stringify(edge)}; use ${Object.keys(EDGES).join(', ')}.`);
     const allowance = tolerance ?? (edge === 'center' || edge === 'middle' ? 1 : 0);
     const scale = edge === 'center' || edge === 'middle' ? 2 : 1;
     const compare = (o) => {
@@ -707,10 +739,9 @@ const CHECKS = {
 
   toHaveText(rect, ctx, needle) {
     const text = textIn(ctx.grid, rect);
-    const pass = needle instanceof RegExp ? new RegExp(needle.source, needle.flags.replace(/[gy]/g, '')).test(text) : text.includes(needle);
     return {
-      pass,
-      expected: `to contain text ${needle instanceof RegExp ? needle.toString() : JSON.stringify(needle)}`,
+      pass: matchesNeedle(text, needle),
+      expected: `to contain text ${formatNeedle(needle)}`,
       observed: `at ${formatRect(rect)} containing ${JSON.stringify(text)}`,
     };
   },
@@ -724,6 +755,9 @@ function relation(ctx, other, phrase, compare, rect) {
   const verdict = typeof result === 'boolean' ? { pass: result } : result;
   return {
     pass: verdict.pass,
+    // A comparison that can't be made (no defined gap between diagonal
+    // regions) fails negated or not, like an operand that isn't there.
+    unresolved: verdict.unresolved,
     expected,
     observed: `at ${formatRect(rect)}; other at ${formatRect(resolved.rect)}${verdict.note ? `; ${verdict.note}` : ''}`,
   };
@@ -778,15 +812,12 @@ function evaluateCheck(name, locator, args, { negate = false, grid, wrapped, siz
 
 module.exports = {
   right,
-  bottom,
   formatRect,
   isRect,
   overlaps,
   contains,
   gapX,
   gapY,
-  cellText,
-  screenIndex,
   findText,
   textIn,
   findBoxes,
@@ -795,7 +826,6 @@ module.exports = {
   evaluateCheck,
   evaluateFocusGroup,
   normalizeColor,
-  firstStyleMismatch,
   focusIndicators,
   DEFAULT_FOCUS,
   maskGrid,

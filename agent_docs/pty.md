@@ -27,7 +27,12 @@ description: node-pty spawn/write/resize/kill contract, the SIGHUP default-signa
 
 ## `spawnPipe`: the same handle without a terminal
 
-`spawnPipe({ command, args, cwd, env })` returns the same handle shape from `child_process.spawn` with three pipes, for `launchGame({ tty: false })`. stdout and stderr feed one `onData` stream (a terminal merges them too); `resize()` is a no-op; `kill()` forwards to the child. Exit info is normalized to node-pty's shape so nothing above this module can tell the difference: signals become **numbers** via `os.constants.signals` (child_process reports names), and a spawn failure (`ENOENT`), which emits `error` and may never emit `close`, resolves as exit code 127, as a shell would report it. Writing after the child closed stdin is swallowed instead of throwing `EPIPE`. `runner/services.js` reuses it for background services.
+`spawnPipe({ command, args, cwd, env })` returns the same handle shape from `child_process.spawn` with three pipes, for `launchGame({ tty: false })`. stdout and stderr feed one `onData` stream (a terminal merges them too), each decoded with `setEncoding('utf8')` so a multi-byte character split across chunks survives; `resize()` is a no-op. Exit info is normalized to node-pty's shape so nothing above this module can tell the difference: signals become **numbers** via `os.constants.signals` (child_process reports names), and a spawn failure (`ENOENT`), which emits `error` and never `exit`, resolves as exit code 127, as a shell would report it, with the reason as `error`. Writing after the child closed stdin is swallowed instead of throwing `EPIPE`. `runner/services.js` reuses it for background services.
+
+Two lifecycle rules, both learned from `sh -c`/`npm run`-style commands whose real work runs in a child of the spawned process:
+
+- **Exit is `exit`, bounded by `close`.** `close` (all pipes closed) is when every byte of output has been delivered, so it's the right moment to report the exit — but a background child that inherited stdout keeps the pipes open after the spawned process is gone, and waiting for `close` alone made `waitForExit()` (and so `stop()`) hang until that child ended. The exit is reported at `close` or `PIPE_CLOSE_GRACE_MS` after `exit`, whichever comes first.
+- **It runs in its own process group, and `kill()` signals the group** (`process.kill(-pid)`, POSIX), so stopping a service also stops what it started. `detached` puts it in a new session, though, so unlike a terminal's process it gets no hangup or Ctrl+C when RPGWright goes away; a `process.on('exit')` hook SIGKILLs any group still running, and `bin/rpgwright.js` turns SIGINT/SIGTERM into a normal exit so that hook runs.
 
 ## Known gotchas
 

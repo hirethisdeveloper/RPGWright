@@ -44,13 +44,41 @@ test('types: every export of rpgwright is declared, and nothing more', () => {
   assert.deepEqual([...exportedNames(indexDts)].sort(), Object.keys(core).sort());
 });
 
-test('types: GameDriver declares exactly the driver methods launchGame returns', async () => {
+// The text of one member's declaration inside `export interface <name>`,
+// up to the next member at the same indentation.
+function memberDeclaration(source, name, member) {
+  const start = source.search(new RegExp(`export interface ${name}\\b`));
+  const from = source.slice(start).search(new RegExp(`\\n  (?:readonly\\s+)?${member}\\??[(<:]`));
+  const rest = source.slice(start + from + 1);
+  const end = rest.slice(1).search(/\n  (?:readonly\s+)?\w+\??[(<:]|\n}/);
+  return rest.slice(0, end + 1);
+}
+
+test('types: GameDriver declares exactly the driver methods launchGame returns, including those on press and mouse', async () => {
   const game = await launchGame({ command: process.execPath, args: [FIXTURE_MINIMAL], cols: 40, rows: 10 });
   try {
     assert.deepEqual([...interfaceMembers(indexDts, 'GameDriver')].sort(), Object.keys(game).sort());
+    for (const member of ['press', 'mouse']) {
+      const declaration = memberDeclaration(indexDts, 'GameDriver', member);
+      const declared = [...declaration.matchAll(/^\s{4}(\w+)\(/gm)].map((m) => m[1]);
+      assert.deepEqual(declared.sort(), Object.keys(game[member]).sort(), `${member}.*`);
+    }
   } finally {
     await game.stop();
   }
+});
+
+test('types: LaunchOptions declares exactly the options launchGame reads', () => {
+  const { requestedFixtures } = require('../runner/fixtures');
+  assert.deepEqual([...interfaceMembers(indexDts, 'LaunchOptions')].sort(), requestedFixtures(launchGame).sort());
+});
+
+test('types: BuiltinFixtures declares exactly the built-in fixtures, and LayoutCheck every layout check', () => {
+  const { BUILTIN_FIXTURES } = require('../runner/fixtures');
+  assert.deepEqual([...interfaceMembers(testDts, 'BuiltinFixtures')].sort(), [...BUILTIN_FIXTURES].sort());
+  const union = /export type LayoutCheck =([^;]+);/.exec(indexDts)[1];
+  const declared = [...union.matchAll(/'(\w+)'/g)].map((m) => m[1]);
+  assert.deepEqual(declared.sort(), Object.keys(require('../src/layout').CHECKS).sort());
 });
 
 test('types: TestApi declares every method on test, and test.d.ts exports test, describe and expect', () => {

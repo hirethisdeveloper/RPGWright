@@ -2,12 +2,13 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { expect } = require('./expect');
+const { validateTimeout } = require('./config');
 
 // Set by run.js before require()-ing each test file, and read back after —
 // registration (this module) and execution (run.js) are deliberately
 // separate: test files run synchronously top-to-bottom to populate this
-// registry, then run.js executes what was collected, launching/stopping a
-// GameDriver around each one.
+// registry, then run.js executes what was collected, setting up and tearing
+// down each test's fixtures around it.
 let suite = null;
 
 // The running test, so test.step/test.info/test.setTimeout can reach it.
@@ -204,6 +205,7 @@ for (const hookName of HOOK_NAMES) {
 // At collection time, sets the timeout for the current scope; inside a
 // running test, changes that test's own timeout. 0 disables it.
 shared.setTimeout = function setTimeout(ms) {
+  validateTimeout(ms, 'test.setTimeout()');
   if (currentRun()) {
     currentRun().info.setTimeout(ms);
     return;
@@ -224,10 +226,12 @@ shared.slow = function slow() {
 
 // Groups actions in the running test's game; a test that never launched
 // one still runs `fn`.
+// Recorded as a step on every process the test has launched, so each one's
+// failure report and trace groups the actions inside it.
 shared.step = function step(name, fn) {
   assertInTest('test.step');
-  const { game } = currentRun();
-  return game ? game.step(name, fn) : fn();
+  const { games } = currentRun();
+  return games.reduceRight((inner, game) => () => game.step(name, inner), fn)();
 };
 
 shared.info = function info() {

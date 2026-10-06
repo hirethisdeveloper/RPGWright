@@ -13,7 +13,8 @@ const CLI = path.join(REPO_ROOT, 'bin', 'rpgwright.js');
 function runCli(args, options = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
-    timeout: 20000,
+    // Generous: the dogfood suites alone take ~20s, more on a loaded machine.
+    timeout: 90000,
     ...options,
   });
 }
@@ -298,6 +299,178 @@ test('hangs', async () => { test.setTimeout(300); await new Promise(() => {}); }
   const result = runCli(['test'], { cwd: dir });
   assert.equal(result.status, 1);
   assert.match(result.stdout, /Test exceeded its 300ms timeout/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: a timed-out test runs its afterEach before the next test, and a game set up after the timeout is stopped', () => {
+  const log = path.join(os.tmpdir(), `rpgwright-e2e-timeout-log-${process.pid}`);
+  fs.rmSync(log, { force: true });
+  const dir = makeProject(
+    {
+      'timeout.rpg.test.js': `const fs = require('node:fs');
+const { test } = require(${TEST_API});
+const log = (m) => fs.appendFileSync(${JSON.stringify(log)}, m + '\\n');
+const t = test.extend({
+  slow: async ({}, use) => { await new Promise((r) => setTimeout(r, 600)); await use(1); },
+  late: async ({ slow, game }, use) => { await use(game); },
+});
+t.afterEach(() => log('afterEach ' + test.info().title));
+t('body hangs', async ({ game }) => { await new Promise(() => {}); });
+t('fixture finishes after the timeout', async ({ late }) => {});
+t('next', async () => { log('next'); });
+`,
+    },
+    'timeout: 300',
+  );
+  const started = Date.now();
+  const result = runCli(['test'], { cwd: dir });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.ok(Date.now() - started < 8000, 'the run ends instead of waiting on a game nobody stops');
+  assert.match(result.stdout, /✖ body hangs/);
+  assert.match(result.stdout, /✖ fixture finishes after the timeout/);
+  assert.match(result.stdout, /✓ next/);
+  assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['afterEach body hangs', 'next', 'afterEach next']);
+  fs.rmSync(log, { force: true });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: hook errors: afterEach fails a passing test, the body\'s error wins over afterEach\'s, and a failing afterAll is reported', () => {
+  const dir = makeProject({
+    'hooks.rpg.test.js': `const { test, describe } = require(${TEST_API});
+describe('after each', () => {
+  test.afterEach(() => { throw new Error('afterEach broke'); });
+  test('passes itself', async () => {});
+  test('fails itself', async () => { throw new Error('body broke'); });
+});
+describe('after all', () => {
+  test.afterAll(() => { throw new Error('afterAll broke'); });
+  test('fine', async () => {});
+});
+`,
+  });
+  const result = runCli(['test'], { cwd: dir });
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /✖ after each > passes itself/);
+  assert.match(result.stdout, /afterEach broke/);
+  assert.match(result.stdout, /✖ after each > fails itself/);
+  assert.match(result.stdout, /body broke/);
+  assert.match(result.stdout, /✓ after all > fine/);
+  assert.match(result.stdout, /after all > afterAll/);
+  assert.match(result.stdout, /afterAll broke/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: a beforeAll that never settles times out (and fails the run) instead of hanging or exiting 0', () => {
+  const dir = makeProject(
+    {
+      'never.rpg.test.js': `const { test } = require(${TEST_API});
+test.beforeAll(() => new Promise(() => {}));
+test('never runs', async () => {});
+`,
+    },
+    'timeout: 300',
+  );
+  const result = runCli(['test'], { cwd: dir });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /beforeAll hook exceeded its 300ms timeout/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: a test that throws a non-Error fails normally, with traces on, and the run continues', () => {
+  const dir = makeProject(
+    {
+      'odd.rpg.test.js': `const { test } = require(${TEST_API});
+test('throws a string', async ({ game }) => { throw 'oops'; });
+test('still runs', async () => {});
+`,
+    },
+    "trace: 'retain-on-failure'",
+  );
+  const result = runCli(['test'], { cwd: dir });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stdout, /✖ throws a string/);
+  assert.match(result.stdout, /Thrown: oops/);
+  assert.match(result.stdout, /Trace: /);
+  assert.match(result.stdout, /✓ still runs/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: a rejection nothing awaits is reported and fails the run, but teardown and reports still happen', () => {
+  const dir = makeProject(
+    {
+      'floating.rpg.test.js': `const { test } = require(${TEST_API});
+test('forgets an await', async ({ game }) => { game.expectText('never', { timeout: 100 }); await new Promise((r) => setTimeout(r, 300)); });
+test('still runs', async () => {});
+`,
+    },
+    "reporter: ['list', 'json']",
+  );
+  const result = runCli(['test'], { cwd: dir });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /Unhandled rejection \(is an `await` missing\?\)/);
+  assert.match(result.stdout, /✓ still runs/);
+  assert.ok(fs.existsSync(path.join(dir, 'test-results', 'results.json')), 'the json report was still written');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: processes started with launch() get traces too, and test.step groups their actions', () => {
+  const dir = makeProject(
+    {
+      'multi.rpg.test.js': `const { test } = require(${TEST_API});
+test('two processes', async ({ launch }) => {
+  const first = await launch();
+  const second = await launch();
+  await test.step('check both', async () => {
+    await first.expectText('READY');
+    await second.expectText('never', { timeout: 200 });
+  });
+});
+`,
+    },
+    "trace: 'retain-on-failure'",
+  );
+  const result = runCli(['test'], { cwd: dir });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'test-results')).filter((f) => f.endsWith('.trace.html')).sort(), [
+    'multi-rpg-test--two-processes-process-2.trace.html',
+    'multi-rpg-test--two-processes.trace.html',
+  ]);
+  assert.match(result.stdout, /step\("check both"\)\n\s+\d+\. expectText\("never"\)/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: --reporter takes a comma-separated list; --list counts repeats; a file that fails to load is named', () => {
+  const dir = makeProject({ 'pair.rpg.test.js': PASSING_PAIR });
+  const both = runCli(['test', '--reporter', 'dot,github'], { cwd: dir });
+  assert.equal(both.status, 0, both.stdout + both.stderr);
+  assert.match(both.stdout, /^\.\./m);
+  const listed = runCli(['test', '--list', '--repeat-each', '3'], { cwd: dir });
+  assert.match(listed.stdout, /Total: 6 tests in 1 file/);
+  fs.writeFileSync(path.join(dir, 'broken.rpg.test.js'), 'notDefined();\n');
+  const broken = runCli(['test'], { cwd: dir });
+  assert.equal(broken.status, 1);
+  assert.match(broken.stderr, /Error loading broken\.rpg\.test\.js: notDefined is not defined/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('rpgwright test: a retry gets fresh fixtures and its own testInfo.retry', () => {
+  const dir = makeProject(
+    {
+      'retry.rpg.test.js': `const { test } = require(${TEST_API});
+const seen = [];
+test('flaky', async ({ game, testInfo }) => {
+  seen.push(game);
+  if (testInfo.retry === 0) throw new Error('first attempt fails');
+  if (seen[0] === seen[1]) throw new Error('the retry reused the first game');
+  await game.expectText('READY');
+});
+`,
+    },
+    'retries: 1',
+  );
+  const result = runCli(['test'], { cwd: dir });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /1 flaky/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -632,21 +805,34 @@ test('breaks', () => { throw new Error('line one\\nline two'); });
 
 test('rpgwright test --workers: files run concurrently, with the same results and the same output order as a serial run', () => {
   const files = {};
+  const log = path.join(os.tmpdir(), `rpgwright-e2e-workers-${process.pid}.log`);
   for (const name of ['a', 'b', 'c', 'd']) {
-    files[`${name}.rpg.test.js`] = `const { test } = require(${TEST_API});
-test('${name}1', async ({ game }) => { await game.expectText('READY'); await new Promise((r) => setTimeout(r, ${name === 'a' ? 600 : 50})); });
+    // a1 records when it ran, and so does every other file's first test:
+    // concurrency shows as overlapping intervals, not as a faster run
+    // (which a loaded machine can't promise).
+    files[`${name}.rpg.test.js`] = `const fs = require('node:fs');
+const { test } = require(${TEST_API});
+test('${name}1', async ({ game }) => {
+  const start = Date.now();
+  await game.expectText('READY');
+  await new Promise((r) => setTimeout(r, ${name === 'a' ? 600 : 50}));
+  fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({ name: '${name}', start, end: Date.now() }) + '\\n');
+});
 test('${name}2', async ({ game }) => { await game.expectText('READY'); });
 `;
   }
   const dir = makeProject(files);
   const strip = (out) => out.replace(/\x1b\[[0-9]*m/g, '').replace(/\(\d+ms\)/g, '').trim();
   const serial = runCli(['test'], { cwd: dir });
+  fs.rmSync(log, { force: true });
   const parallel = runCli(['test', '--workers', '4'], { cwd: dir });
   assert.equal(serial.status, 0, serial.stdout + serial.stderr);
   assert.equal(parallel.status, 0, parallel.stdout + parallel.stderr);
   assert.equal(strip(parallel.stdout), strip(serial.stdout));
-  const time = (out) => Number(/passed \((\d+)ms\)/.exec(out)[1]);
-  assert.ok(time(parallel.stdout) < time(serial.stdout), `parallel ${time(parallel.stdout)}ms should beat serial ${time(serial.stdout)}ms`);
+  const runs = fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  const a = runs.find((r) => r.name === 'a');
+  assert.ok(runs.some((r) => r.name !== 'a' && r.start < a.end && a.start < r.end), `another file ran while a1 did: ${JSON.stringify(runs)}`);
+  fs.rmSync(log, { force: true });
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -722,25 +908,76 @@ test('rpgwright test: a service that exits before it is ready fails the run, sho
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('rpgwright test --watch: reruns when a test file changes', async () => {
+// Starts `rpgwright test --watch` in `dir`; waitFor(re) waits for its output.
+function startWatch(dir) {
   const { spawn } = require('node:child_process');
-  const dir = makeProject({ 'pair.rpg.test.js': PASSING_PAIR });
   const child = spawn(process.execPath, [CLI, 'test', '--watch'], { cwd: dir });
-  let output = '';
+  const state = { output: '' };
   child.stdout.on('data', (d) => {
-    output += d;
+    state.output += d;
   });
-  const waitFor = async (re, label) => {
+  // Waits for `re` in the output, or only in what came after offset `from`.
+  const waitFor = async (re, label, from = 0) => {
     const deadline = Date.now() + 15000;
-    while (!re.test(output)) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}:\n${output}`);
+    while (!re.test(state.output.slice(from))) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}:\n${state.output}`);
       await new Promise((r) => setTimeout(r, 50));
     }
   };
+  return { child, state, waitFor };
+}
+
+test('rpgwright test --watch: reruns a changed test file alone, everything for a changed helper, and ignores what runs write', async () => {
+  const dir = makeProject(
+    {
+      'helper.js': "module.exports = { label: 'beta' };\n",
+      'pair.rpg.test.js': `const { test } = require(${TEST_API});
+const { label } = require('./helper');
+test('alpha', async ({ game }) => { await game.expectText('READY'); });
+test(label, async ({ game }) => { await game.expectText('READY'); });
+`,
+    },
+    // Traces into a custom outputDir: if the watcher saw its own writes,
+    // every run would trigger another.
+    "trace: 'on', outputDir: 'out'",
+  );
+  const { child, state, waitFor } = startWatch(dir);
   try {
     await waitFor(/2 passed[\s\S]*Waiting for file changes/, 'the first run');
-    fs.writeFileSync(path.join(dir, 'pair.rpg.test.js'), PASSING_PAIR.replace("'beta'", "'gamma'"));
-    await waitFor(/Changed: pair\.rpg\.test\.js[\s\S]*✓ gamma[\s\S]*2 passed[\s\S]*Waiting for file changes/, 'the rerun');
+    const testFile = path.join(dir, 'pair.rpg.test.js');
+    fs.writeFileSync(testFile, fs.readFileSync(testFile, 'utf8').replace("'alpha'", "'gamma'"));
+    await waitFor(/Changed: pair\.rpg\.test\.js[\s\S]*✓ gamma[\s\S]*2 passed[\s\S]*Waiting for file changes/, 'the rerun of the test file');
+    fs.writeFileSync(path.join(dir, 'helper.js'), "module.exports = { label: 'delta' };\n");
+    await waitFor(/Changed: helper\.js[\s\S]*✓ delta[\s\S]*2 passed[\s\S]*Waiting for file changes/, 'the full rerun with the edited helper');
+    await new Promise((r) => setTimeout(r, 1000));
+    assert.equal(state.output.match(/Changed:/g).length, 2, `no rerun triggered by the run's own output:\n${state.output}`);
+    // A run that can't even load the file doesn't stop the watcher.
+    const working = fs.readFileSync(testFile, 'utf8');
+    let mark = state.output.length;
+    fs.writeFileSync(testFile, `${working}\n)(`);
+    await waitFor(/Changed: pair\.rpg\.test\.js[\s\S]*Waiting for file changes/, 'the failed load', mark);
+    assert.doesNotMatch(state.output.slice(mark), /passed/);
+    mark = state.output.length;
+    fs.writeFileSync(testFile, working);
+    await waitFor(/Changed: pair\.rpg\.test\.js[\s\S]*✓ gamma[\s\S]*2 passed[\s\S]*Waiting for file changes/, 'the run after the fix', mark);
+  } finally {
+    child.kill();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpgwright test --watch: an ES-module (TypeScript) test file still registers its tests on a rerun', { skip: !process.features.typescript && 'this Node has no built-in TypeScript support' }, async () => {
+  const source = `import { test } from 'rpgwright/test';
+test('NAME', async ({ game }) => { await game.expectText('READY'); });
+`;
+  const dir = makeProject({ 'esm.rpg.test.ts': source.replace('NAME', 'first') });
+  fs.mkdirSync(path.join(dir, 'node_modules'));
+  fs.symlinkSync(REPO_ROOT, path.join(dir, 'node_modules', 'rpgwright'), 'dir');
+  const { child, waitFor } = startWatch(dir);
+  try {
+    await waitFor(/✓ first[\s\S]*1 passed[\s\S]*Waiting for file changes/, 'the first run');
+    fs.writeFileSync(path.join(dir, 'esm.rpg.test.ts'), source.replace('NAME', 'second'));
+    await waitFor(/Changed: esm\.rpg\.test\.ts[\s\S]*✓ second[\s\S]*1 passed/, 'the rerun');
   } finally {
     child.kill();
     fs.rmSync(dir, { recursive: true, force: true });

@@ -201,18 +201,28 @@ describe('rendering and traces', () => {
     assert.match(html, /Name: Aria<span style="outline:1px solid #f5c542;outline-offset:-1px"> <\/span>/);
   });
 
-  test('getTrace has every action with the screen it finished on, and the final screen after stop()', async ({ game }) => {
-    await game.expectText('Name:');
+  test('without record, actions keep no screens (memory stays flat over a long test)', async ({ game }) => {
     await game.type('Al');
     await game.expectText('Name: Al');
-    await game.stop();
-    const trace = game.getTrace();
-    assert.deepEqual(trace.actions.map((a) => a.type), ['expectText', 'type', 'expectText']);
-    const lastScreen = trace.actions[2].screen.map((row) => row.map((c) => c.ch || ' ').join('').trimEnd());
-    assert.equal(lastScreen[1], 'Name: Al');
-    assert.ok(trace.frames.length > 0 && trace.frames.every((f) => typeof f.text === 'string'));
-    assert.ok(trace.final.grid.length > 0);
-    assert.match(game.renderHtml(), /Name: Al/, 'renderHtml still works after stop()');
+    assert.ok(game.actions.every((a) => a.screen === undefined && a.cursor === undefined));
+  });
+
+  describe('with record', () => {
+    test.use({ record: true });
+
+    test('getTrace has every action with the screen it finished on, and the final screen after stop()', async ({ game }) => {
+      await game.expectText('Name:');
+      await game.type('Al');
+      await game.expectText('Name: Al');
+      await game.stop();
+      const trace = game.getTrace();
+      assert.deepEqual(trace.actions.map((a) => a.type), ['expectText', 'type', 'expectText']);
+      const lastScreen = trace.actions[2].screen.map((row) => row.map((c) => c.ch || ' ').join('').trimEnd());
+      assert.equal(lastScreen[1], 'Name: Al');
+      assert.ok(trace.frames.length > 0 && trace.frames.every((f) => typeof f.text === 'string'));
+      assert.ok(trace.final.grid.length > 0);
+      assert.match(game.renderHtml(), /Name: Al/, 'renderHtml still works after stop()');
+    });
   });
 });
 
@@ -255,6 +265,17 @@ describe('mouse', () => {
       await game.expectText('GOT "\\u001b[M !!"');
       await game.expectText('GOT "\\u001b[M@#!"');
       await game.expectText('GOT "\\u001b[M##!"');
+    });
+  });
+
+  describe('with the plain X10 encoding, far to the right (?1000)', () => {
+    test.use({ args: [PROBE, 'mouse', '1000', 'hex'], cols: 160 });
+
+    test('a coordinate past 94 is sent as one raw byte, as xterm sends it, not UTF-8 encoded', async ({ game }) => {
+      await game.expectText('READY');
+      await game.mouse.down(150, 2);
+      // ESC [ M, button 0+32, column 151+32 = 0xb7, row 3+32.
+      await game.expectText('HEX 1b5b4d20b723');
     });
   });
 
@@ -427,6 +448,28 @@ describe('without a terminal (tty: false)', () => {
       await game.expectText('READY');
       await game.type('x\n');
       await expect(game).toHaveExited({ code: 5 });
+    });
+  });
+
+  describe('when the app exits right after a flood of output', () => {
+    test.use({ args: [PROBE, 'flood'] });
+
+    test('the end of its output is on screen once the exit is seen', async ({ game }) => {
+      await game.waitForExit();
+      await game.expectText('DONE', { timeout: 1000 });
+    });
+  });
+});
+
+describe('expectExit', () => {
+  describe('an app killed by a signal', () => {
+    test.use({ args: [PROBE, 'crash'] });
+
+    test('does not count as exiting with code 0', async ({ game }) => {
+      await game.expectText('READY');
+      await game.press('x');
+      await assert.rejects(game.expectExit({ code: 0 }, { timeout: 2000 }), /the process to exit with code 0[\s\S]*Observed: signal 9/);
+      await game.expectExit({ signal: 'SIGKILL' });
     });
   });
 });

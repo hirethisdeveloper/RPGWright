@@ -19,8 +19,18 @@ function slugify(text) {
   );
 }
 
-function tracePath(outputDir, file, testName) {
-  return path.join(outputDir, `${slugify(path.basename(file, '.js'))}--${slugify(testName)}.trace.html`);
+// The file part is the test file's path under testDir (so same-named files
+// in different directories differ). Slugs are lossy and capped, so two
+// tests can still map to one name (a retry's "(retry n)" cut off a long
+// title, say); `taken`, one per run, numbers the later ones instead of
+// letting them overwrite each other.
+function tracePath(outputDir, file, testName, { testDir, taken } = {}) {
+  const relative = testDir ? path.relative(testDir, file) : path.basename(file);
+  const base = `${slugify(relative.replace(/\.[jt]s$/, ''))}--${slugify(testName)}`;
+  let name = base;
+  for (let n = 2; taken && taken.has(name); n += 1) name = `${base}-${n}`;
+  if (taken) taken.add(name);
+  return path.join(outputDir, `${name}.trace.html`);
 }
 
 function actionLabel(action) {
@@ -102,8 +112,8 @@ function buildCast(recording, { title }) {
 
 // Writes the trace page, and the .cast recording next to it when the run
 // recorded one. Returns both paths (cast is null without a recording).
-function writeTrace(outputDir, details) {
-  const target = tracePath(outputDir, details.file, details.testName);
+function writeTrace(outputDir, details, naming) {
+  const target = tracePath(outputDir, details.file, details.testName, naming);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, buildTraceHtml(details), 'utf8');
   let cast = null;

@@ -20,7 +20,7 @@ If no `package.json` is found in the current directory, `init` still writes the 
 
 ## `rpgwright test`
 
-Discovers and runs every test file matching your config's `testMatch` (default `**/*.rpg.test.js`) under `testDir`, printing a running pass/fail line per test and a summary at the end.
+Discovers and runs every test file matching your config's `testMatch` (default `**/*.rpg.test.js` and `**/*.rpg.test.ts`) under `testDir`, printing a running pass/fail line per test and a summary at the end.
 
 ```bash
 npx rpgwright test
@@ -38,7 +38,7 @@ npx rpgwright test --grep @smoke
 | `--grep <regex>` | Only run tests whose full name (including `describe` titles, joined with ` > `) matches. Put tags such as `@smoke` in test names and select them this way. |
 | `--grep-invert <regex>` | Skip tests whose full name matches. |
 | `--list` | Print the selected tests as `file:line › name`, plus a total, and run nothing. |
-| `--reporter <name>` | Override the config's `reporter` for this run. |
+| `--reporter <name>` | Override the config's `reporter` for this run. Separate several with commas: `--reporter list,github`. |
 | `--update-snapshots` | Re-record every snapshot this run touches instead of comparing against it. |
 | `--max-failures <n>` | Stop the run once `n` tests have failed. |
 | `--retries <n>` | Rerun a failed test up to `n` times; overrides the config's `retries`. |
@@ -123,7 +123,7 @@ module.exports = {
 };
 ```
 
-`--reporter <name>` on the command line replaces the whole list with that one reporter.
+`--reporter <name>` on the command line replaces the whole list, with that one reporter or a comma-separated list (`--reporter dot,github`).
 
 ### Running tests in parallel
 
@@ -137,4 +137,4 @@ Every test already gets its own app process, so tests in different files only co
 
 ### Exit codes
 
-`rpgwright test` exits `0` if every test passed, `1` if any test failed (or the config itself couldn't be loaded) — the standard convention for wiring into CI or a pre-commit/pre-push hook.
+`rpgwright test` exits `0` if every test passed, `1` if any test failed, a test only passed on a retry with `--fail-on-flaky`, a rejection went unhandled (a missing `await`), or the config itself couldn't be loaded — the standard convention for wiring into CI or a pre-commit/pre-push hook.

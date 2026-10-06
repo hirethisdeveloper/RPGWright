@@ -295,4 +295,4 @@ function createReporter(spec = 'list', { outputDir = path.resolve('test-results'
   return Object.fromEntries(['fileStarted', 'testPassed', 'testFailed', 'testSkipped', 'summary'].map((m) => [m, forward(m)]));
 }
 
-module.exports = { createReporter, REPORTERS };
+module.exports = { createReporter };

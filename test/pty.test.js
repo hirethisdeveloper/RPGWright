@@ -64,7 +64,7 @@ test('pty: waitForExit() resolves immediately once the process has already exite
 
 const { spawnPipe } = require('../src/pty');
 
-test('spawnPipe: same handle shape, the child sees no TTY, and stdout and stderr are merged', async () => {
+test('spawnPipe: same handle shape, the child sees no TTY, and stdout and stderr are merged', { timeout: 10000 }, async () => {
   const handle = spawnPipe({
     command: process.execPath,
     args: ['-e', "process.stdout.write('isTTY=' + Boolean(process.stdout.isTTY) + '\\n'); process.stderr.write('to stderr\\n'); process.stdin.on('data', (d) => { process.stdout.write('echo ' + d); process.exit(4); });"],
@@ -90,4 +90,37 @@ test('spawnPipe: kill() reports the signal as a number; a missing command exits 
 
   const missing = spawnPipe({ command: '/nonexistent/command' });
   assert.equal((await missing.waitForExit()).exitCode, 127);
+});
+
+test('spawnPipe: a multi-byte character split across two chunks decodes cleanly', async () => {
+  const handle = spawnPipe({
+    command: process.execPath,
+    args: ['-e', "const b = Buffer.from('─'); process.stdout.write(b.subarray(0, 1)); setTimeout(() => process.stdout.write(b.subarray(1)), 50);"],
+  });
+  let output = '';
+  handle.onData((chunk) => {
+    output += chunk;
+  });
+  await handle.waitForExit();
+  assert.equal(output, '─');
+});
+
+test('spawnPipe: the exit is reported while a process it started still holds the pipes, and kill() reaches that process too', { timeout: 10000 }, async () => {
+  const handle = spawnPipe({ command: 'sh', args: ['-c', 'sleep 30 & echo "pid=$!"'] });
+  let output = '';
+  handle.onData((chunk) => {
+    output += chunk;
+  });
+  const exitInfo = await handle.waitForExit();
+  assert.deepEqual(exitInfo, { exitCode: 0, signal: null });
+  const sleeper = Number(/pid=(\d+)/.exec(output)[1]);
+  assert.doesNotThrow(() => process.kill(sleeper, 0), 'the background process is still running');
+  handle.kill('SIGKILL');
+  await new Promise((r) => setTimeout(r, 100));
+  assert.throws(() => process.kill(sleeper, 0), /ESRCH/, 'kill() signalled the whole process group');
+});
+
+test('spawnPipe: a command that cannot be started keeps the reason', async () => {
+  const missing = spawnPipe({ command: '/nonexistent/command' });
+  assert.match((await missing.waitForExit()).error, /ENOENT/);
 });

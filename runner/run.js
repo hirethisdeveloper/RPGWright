@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const { loadConfig, validateTrace } = require('./config');
 const { shouldWriteTrace, writeTrace } = require('./trace');
 const { discoverTestFiles } = require('./discover');
@@ -113,7 +114,7 @@ function isSkipped(t) {
  * test.slow inside the body restart the timer from the test's start).
  * `promise` rejects when the deadline passes; 0 means no timeout.
  */
-function createDeadline(timeoutMs) {
+function createDeadline(timeoutMs, label = 'Test') {
   const start = Date.now();
   let timer = null;
   let rejectFn;
@@ -127,13 +128,17 @@ function createDeadline(timeoutMs) {
     deadline.timeout = ms;
     if (ms === 0) return;
     timer = setTimeout(
-      () => rejectFn(new Error(`Test exceeded its ${ms}ms timeout.`)),
+      () => {
+        deadline.error = new Error(`${label} exceeded its ${ms}ms timeout.`);
+        rejectFn(deadline.error);
+      },
       Math.max(0, start + ms - Date.now()),
     );
   }
 
   const deadline = {
     timeout: timeoutMs,
+    error: null,
     promise,
     setTimeout: arm,
     slow: () => arm(deadline.timeout * 3),
@@ -153,8 +158,33 @@ function resolveTimeout(chain, config) {
   return slow ? timeout * 3 : timeout;
 }
 
+// Tests can throw anything (`throw 'oops'`); everything downstream (the
+// reporters, the trace, the appended Trace: line) needs an Error.
+function toError(value) {
+  return value instanceof Error ? value : new Error(`Thrown: ${typeof value === 'string' ? value : JSON.stringify(value)}`);
+}
+
 async function runHooks(hooks, fixtures) {
   for (const hook of hooks) await hook(fixtures);
+}
+
+// Runs `work` against a deadline; a timed-out `work` is abandoned (its
+// eventual rejection has nowhere to go).
+function withinDeadline(work, deadline) {
+  work.catch(() => {});
+  return Promise.race([work, deadline.promise]);
+}
+
+// beforeAll/afterAll hooks get the same timeout a test in their scope would.
+async function runScopeHooks(hooks, kind, timeout) {
+  const deadline = createDeadline(timeout, `${kind} hook`);
+  try {
+    await withinDeadline(runHooks(hooks, {}), deadline);
+  } catch (err) {
+    throw toError(err);
+  } finally {
+    deadline.clear();
+  }
 }
 
 // The fixtures a test needs: whatever it and its beforeEach/afterEach hooks
@@ -204,44 +234,40 @@ async function runTest(t, chain, config, cliOptions, holder, attempt) {
     defs: t.fixtureDefs,
     launchOptions,
     testInfo: info,
-    onGame: (game) => {
-      holder.game = game;
-    },
   });
-  const run = {
-    get game() {
-      return fixtureScope.get('game');
-    },
-    info,
-  };
+  holder.games = fixtureScope.games;
+  const run = { games: fixtureScope.games, info };
 
+  let fixtures = null;
   const body = testModule._runWith(run, async () => {
-    const fixtures = await fixtureScope.resolveAll(fixturesFor([...beforeEach, t.fn, ...afterEach]));
-    let bodyError = null;
-    try {
-      await runHooks(beforeEach, fixtures);
-      await t.fn(fixtures);
-    } catch (err) {
-      bodyError = err;
-    }
-    // afterEach always runs, innermost scope first; the test's own error
-    // wins over a later afterEach error.
-    try {
-      await runHooks(afterEach, fixtures);
-    } catch (err) {
-      if (!bodyError) bodyError = err;
-    }
-    if (bodyError) throw bodyError;
+    fixtures = await fixtureScope.resolveAll(fixturesFor([...beforeEach, t.fn, ...afterEach]));
+    await runHooks(beforeEach, fixtures);
+    await t.fn(fixtures);
   });
-  // If the deadline wins, the body keeps running until teardown stops its
-  // game; its eventual rejection has nowhere to go.
-  body.catch(() => {});
 
+  // If the deadline wins, the body is abandoned: it keeps running until
+  // teardown stops its game, and anything it sets up after that is torn
+  // down straight away (see createFixtureScope).
   let error = null;
+  let timedOut = false;
   try {
-    await Promise.race([body, deadline.promise]);
+    await withinDeadline(body, deadline);
   } catch (err) {
     error = err;
+    timedOut = err === deadline.error;
+  }
+  // afterEach always runs once the fixtures exist, innermost scope first,
+  // before teardown and before the next test starts; the test's own error
+  // wins over a later afterEach error. After a timeout it gets a fresh
+  // timeout of its own rather than none at all.
+  if (fixtures && afterEach.length > 0) {
+    const hooksDeadline = timedOut ? createDeadline(deadline.timeout, 'afterEach hook') : deadline;
+    try {
+      await withinDeadline(testModule._runWith(run, () => runHooks(afterEach, fixtures)), hooksDeadline);
+    } catch (err) {
+      if (!error) error = err;
+    }
+    hooksDeadline.clear();
   }
   deadline.clear();
   try {
@@ -249,7 +275,7 @@ async function runTest(t, chain, config, cliOptions, holder, attempt) {
   } catch (err) {
     if (!error) error = err;
   }
-  if (error) throw error;
+  if (error) throw toError(error);
 }
 
 /**
@@ -267,7 +293,7 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
       const scope = open.pop();
       if (scope.beforeAllError) continue;
       try {
-        await runHooks([...scope.hooks.afterAll].reverse(), {});
+        await runScopeHooks([...scope.hooks.afterAll].reverse(), 'afterAll', resolveTimeout(testModule._scopeChain(scope), config));
       } catch (err) {
         reporter.testFailed(`${scope.name || 'file'} > afterAll`, 0, err);
         budget.failures += 1;
@@ -292,7 +318,7 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
       scope.beforeAllError = null;
       if (open.some((s) => s.beforeAllError)) continue;
       try {
-        await runHooks(scope.hooks.beforeAll, {});
+        await runScopeHooks(scope.hooks.beforeAll, 'beforeAll', resolveTimeout(testModule._scopeChain(scope), config));
       } catch (err) {
         scope.beforeAllError = err;
       }
@@ -316,19 +342,24 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
       if (t.fail && !failedSetup) {
         error = error ? null : new Error('Expected this test to fail (test.fail), but it passed.');
       }
-      if (holder.game && shouldWriteTrace(cliOptions.trace, Boolean(error))) {
-        const written = writeTrace(config.outputDir, {
-          testName: retry > 0 ? `${t.name} (retry ${retry})` : t.name,
-          file: t.file,
-          passed: !error,
-          durationMs: Date.now() - testStart,
-          error,
-          trace: holder.game.getTrace(),
+      if (holder.games && holder.games.length > 0 && shouldWriteTrace(cliOptions.trace, Boolean(error))) {
+        // One trace per launched process; the second and later are named
+        // after their launch order.
+        holder.games.forEach((game, index) => {
+          const name = retry > 0 ? `${t.name} (retry ${retry})` : t.name;
+          const written = writeTrace(config.outputDir, {
+            testName: index === 0 ? name : `${name} (process ${index + 1})`,
+            file: t.file,
+            passed: !error,
+            durationMs: Date.now() - testStart,
+            error,
+            trace: game.getTrace(),
+          }, { testDir: config.testDir, taken: cliOptions.traceNames });
+          if (error) {
+            error.message += `${index === 0 ? '\n' : ''}\nTrace: ${written.trace}`;
+            if (written.cast) error.message += `\nRecording: ${written.cast}`;
+          }
         });
-        if (error) {
-          error.message += `\n\nTrace: ${written.trace}`;
-          if (written.cast) error.message += `\nRecording: ${written.cast}`;
-        }
       }
 
       const duration = Date.now() - testStart;
@@ -422,7 +453,13 @@ function collectFiles(files) {
   return files.map((file) => {
     testModule._beginFile(file);
     delete require.cache[require.resolve(file)];
-    require(file);
+    try {
+      require(file);
+    } catch (err) {
+      // Without the file's name, "x is not defined" could be from anywhere.
+      err.message = `Error loading ${path.relative(process.cwd(), file)}: ${err.message}`;
+      throw err;
+    }
     return { file, tests: testModule._collect() };
   });
 }
@@ -430,10 +467,10 @@ function collectFiles(files) {
 /**
  * Discovers every test file matching the resolved config, collects all of
  * their tests up front (so test.only and filters apply across files), then
- * runs them file by file. Each test gets its own freshly launched
- * GameDriver (the `game` fixture), auto-stopped in a finally block
- * regardless of pass/fail — this is the runner's whole reason to exist over
- * hand-rolled launch/try/finally-stop boilerplate per test file.
+ * runs them file by file. Each test gets the fixtures it asks for, set up
+ * fresh (a test that asks for `game` gets its own newly launched
+ * GameDriver) and torn down whatever happened — this is the runner's whole
+ * reason to exist over hand-rolled launch/try/finally-stop boilerplate.
  */
 async function runTests({
   cwd = process.cwd(),
@@ -469,11 +506,14 @@ async function runTests({
     for (const { file, tests } of plan) {
       for (const t of tests) console.log(`  ${path.relative(config.testDir, file)}:${t.line} › ${t.name}`);
     }
-    console.log(`Total: ${selected.size} test${selected.size === 1 ? '' : 's'} in ${plan.length} file${plan.length === 1 ? '' : 's'}`);
+    const total = plan.reduce((n, { tests }) => n + tests.length, 0);
+    console.log(`Total: ${total} test${total === 1 ? '' : 's'} in ${plan.length} file${plan.length === 1 ? '' : 's'}`);
     return { passed: 0, failed: 0, skipped: 0, flaky: 0 };
   }
 
-  const activeReporter = createReporter(reporter || config.reporter, { outputDir: config.outputDir, cwd });
+  // --reporter list,github runs several, like a list in the config.
+  const reporters = reporter && reporter.includes(',') ? reporter.split(',') : reporter;
+  const activeReporter = createReporter(reporters || config.reporter, { outputDir: config.outputDir, cwd });
   const start = Date.now();
 
   if (files.length === 0) {
@@ -483,49 +523,79 @@ async function runTests({
   }
 
   const budget = { failures: 0, max: maxFailures ?? Infinity };
+  // A rejection nothing awaits (usually a missing `await` before an
+  // expect*) would otherwise crash the process, skipping teardown, services
+  // and the json/junit reports. Report it and fail the run instead.
+  let unhandled = 0;
+  const onUnhandled = (reason) => {
+    unhandled += 1;
+    console.error(`\nUnhandled rejection (is an \`await\` missing?):\n${toError(reason).message}`);
+  };
+  process.on('unhandledRejection', onUnhandled);
   // Services and globalSetup only start when there are tests to run.
-  const teardownEnvironment = plan.length > 0 ? await startRunEnvironment(config) : async () => {};
+  let teardownEnvironment = async () => {};
   try {
+    if (plan.length > 0) teardownEnvironment = await startRunEnvironment(config);
     await runPlan(plan, {
       config,
-      cliOptions: { updateSnapshots, trace: traceMode, retries: retries ?? config.retries },
+      cliOptions: { updateSnapshots, trace: traceMode, retries: retries ?? config.retries, traceNames: new Set() },
       reporter: activeReporter,
       budget,
       workers: workers ?? config.workers,
     });
   } finally {
     await teardownEnvironment();
+    process.off('unhandledRejection', onUnhandled);
   }
   if (budget.failures >= budget.max) {
     console.log(`\nStopped after ${budget.max} failure${budget.max === 1 ? '' : 's'} (--max-failures).`);
   }
 
-  return activeReporter.summary(Date.now() - start);
+  return { ...activeReporter.summary(Date.now() - start), unhandled };
 }
 
-const IGNORED_IN_WATCH = /(^|[\\/])(node_modules|\.git|__snapshots__|test-results)([\\/]|$)/;
+const IGNORED_IN_WATCH = /(^|[\\/])(node_modules|\.git)([\\/]|$)/;
+const CLI_PATH = path.join(__dirname, '..', 'bin', 'rpgwright.js');
 
 /**
  * Runs the suite, then reruns on every file change under the test
- * directory, the config's directory and any `watchPaths`. A change only to
- * test files reruns just those files; any other change reruns everything
- * selected. Modules loaded from those directories are dropped from the
- * require cache first, so edited helpers are picked up. Runs until killed.
+ * directory, the config's directory and any `watchPaths`, ignoring what a
+ * run writes itself (outputDir, snapshotsDir). A change only to test files
+ * reruns just those files; any other change reruns everything selected.
+ * Each run is a fresh `rpgwright test` process: a module cache can't be
+ * reliably reset in place (an ES-module test file isn't re-evaluated after
+ * being dropped from require.cache, so it registered no tests on reruns).
+ * Runs until killed.
  */
-async function watch(options) {
+async function watch(options, args) {
   const cwd = process.cwd();
-  const runOnce = async (filters) => {
-    try {
-      await runTests({ ...options, filters });
-    } catch (err) {
-      console.error(err.message);
-    }
-    console.log('\nWaiting for file changes. Press Ctrl+C to exit.');
-  };
+  // The command line minus --watch and the filters; each run adds its own.
+  const flags = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (VALUE_FLAGS[args[i]]) flags.push(args[i], args[(i += 1)]);
+    else if (BOOLEAN_FLAGS[args[i]] && args[i] !== '--watch') flags.push(args[i]);
+  }
+  let current = null;
+  // A run still going when the watcher is stopped (SIGTERM, not the
+  // terminal's Ctrl+C, which reaches both) is stopped with it.
+  process.on('exit', () => current && current.kill());
+  const runOnce = (filters) =>
+    new Promise((resolve) => {
+      const child = spawn(process.execPath, [...process.execArgv, CLI_PATH, 'test', ...flags, ...filters], { stdio: 'inherit' });
+      current = child;
+      child.on('close', () => {
+        current = null;
+        console.log('\nWaiting for file changes. Press Ctrl+C to exit.');
+        resolve();
+      });
+    });
   await runOnce(options.filters);
 
   const config = loadConfig({ configPath: options.configPath, cwd });
-  const roots = [...new Set([config.testDir, path.dirname(config.configPath), ...(config.watchPaths || []).map((p) => path.resolve(path.dirname(config.configPath), p))])];
+  const configDir = path.dirname(config.configPath);
+  const roots = [...new Set([config.testDir, configDir, ...(config.watchPaths || []).map((p) => path.resolve(configDir, p))])];
+  const written = [config.outputDir, path.resolve(cwd, config.snapshotsDir || '__snapshots__')];
+  const ignored = (file) => IGNORED_IN_WATCH.test(file) || written.some((dir) => file === dir || file.startsWith(dir + path.sep));
   const changed = new Set();
   let timer = null;
   let running = false;
@@ -538,9 +608,6 @@ async function watch(options) {
     running = true;
     const files = [...changed];
     changed.clear();
-    for (const key of Object.keys(require.cache)) {
-      if (roots.some((root) => key.startsWith(root)) && !IGNORED_IN_WATCH.test(key)) delete require.cache[key];
-    }
     const testFiles = new Set(discoverTestFiles({ testDir: config.testDir, testMatch: config.testMatch }));
     const onlyTests = files.every((f) => testFiles.has(f));
     console.log(`\nChanged: ${files.map((f) => path.relative(cwd, f)).join(', ')}`);
@@ -550,8 +617,10 @@ async function watch(options) {
 
   for (const root of roots) {
     fs.watch(root, { recursive: true }, (event, filename) => {
-      if (!filename || IGNORED_IN_WATCH.test(filename)) return;
-      changed.add(path.join(root, filename));
+      if (!filename) return;
+      const file = path.join(root, filename);
+      if (ignored(file)) return;
+      changed.add(file);
       clearTimeout(timer);
       timer = setTimeout(rerun, 200);
     });
@@ -560,13 +629,17 @@ async function watch(options) {
 }
 
 async function runCli(args) {
+  // Failed until the run reaches its summary: if it never does (a hook
+  // awaiting a promise that never settles lets the event loop drain), the
+  // process must not exit 0 as though everything passed.
+  process.exitCode = 1;
   const options = parseArgs(args);
-  if (options.watch) return watch(options);
+  if (options.watch) return watch(options, args);
   const totals = await runTests(options);
   if (options.failOnFlaky && totals.flaky > 0) {
     console.log(`\n${totals.flaky} flaky test${totals.flaky === 1 ? '' : 's'} (--fail-on-flaky).`);
   }
-  process.exitCode = totals.failed > 0 || (options.failOnFlaky && totals.flaky > 0) ? 1 : 0;
+  process.exitCode = totals.failed > 0 || totals.unhandled > 0 || (options.failOnFlaky && totals.flaky > 0) ? 1 : 0;
 }
 
 module.exports = { runTests, runCli, parseArgs };

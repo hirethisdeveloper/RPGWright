@@ -12,7 +12,7 @@ Test options:
   --grep <regex>           Only run tests whose full name matches
   --grep-invert <regex>    Skip tests whose full name matches
   --list                   List the selected tests without running them
-  --reporter <name>        Override the config's reporter (list, dot, json, junit, github)
+  --reporter <names>       Override the config's reporter (list, dot, json, junit, github; comma-separate several)
   --update-snapshots       Re-record every snapshot the run touches
   --max-failures <n>       Stop after n failures
   --trace <mode>           Write an HTML trace per test: on, off, retain-on-failure
@@ -31,6 +31,12 @@ async function main() {
   const [, , command, ...rest] = process.argv;
 
   if (command === 'test') {
+    // Exit (rather than die from the signal) so process 'exit' cleanup runs:
+    // background services and tty: false apps don't get the terminal's
+    // Ctrl+C or hangup themselves.
+    for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+      process.once(signal, () => process.exit(code));
+    }
     const { runCli } = require('../runner/run');
     await runCli(rest);
     return;

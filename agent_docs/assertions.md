@@ -5,7 +5,7 @@ description: waitUntil's event-driven design, waitUntilAbsent's debounced-absenc
 
 # `assertions.js`
 
-Four wait primitives, each suited to a different kind of condition: `waitUntil` (event-driven, wait for something to become true), `waitUntilAbsent` (event-driven, wait for something to become *and stay* false), `waitForQuiet` (event-driven, wait for updates to stop), and `pollUntil` (interval-based, for state with no event source at all). Every `expect*`/`wait*` method in `game.js` builds on exactly one of these rather than reimplementing wait logic per method.
+Four wait primitives, each suited to a different kind of condition: `waitUntil` (event-driven, wait for something to become true), `waitUntilAbsent` (event-driven, wait for something to become *and stay* false), `waitForQuiet` (event-driven, wait for updates to stop), and `pollUntil` (interval-based, for state with no event source at all). The screen and state assertions in `game.js` build on these rather than reimplementing wait logic per method (snapshot recording combines `waitForQuiet` with a comparison; `waitForExit`/`expectExit` wait on the process instead, via `exitWithin`).
 
 ## `waitUntil(onUpdate, predicate, { timeout, exitPromise })`
 

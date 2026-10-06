@@ -144,7 +144,39 @@ describe('the same screen, drawn without color', () => {
   });
 });
 
-test('mask and normalize keep volatile content out of a snapshot; maxDiffCells tolerates small changes', async ({ game }) => {
+describe('a screen whose build number changes', () => {
+  const snapshotsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-volatile-'));
+  test.use({ snapshotsDir });
+
+  test('mask and normalize keep it out of the snapshot; without them the comparison fails', async ({ game, launch }) => {
+    await game.expectText('build 42');
+    const mask = { mask: [/build \d+/] };
+    const normalize = { normalize: (text) => text.replace(/build \d+/, 'build N') };
+    await expect(game).toMatchScreenSnapshot('masked', mask);
+    await expect(game).toMatchScreenSnapshot('normalized', normalize);
+    await expect(game).toMatchScreenSnapshot('plain');
+
+    const rebuilt = await launch({ env: { ...process.env, BUILD_ID: '97' } });
+    await rebuilt.expectText('build 97');
+    await expect(rebuilt).toMatchScreenSnapshot('masked', { ...mask, timeout: 300 });
+    await expect(rebuilt).toMatchScreenSnapshot('normalized', { ...normalize, timeout: 300 });
+    await assert.rejects(expect(rebuilt).toMatchScreenSnapshot('plain', { timeout: 300 }), /E2E TEST FAILED/);
+  });
+
+  test('adding styles: true to an existing snapshot still compares its text before recording the styles', async ({ game, launch }) => {
+    await game.expectText('build 42');
+    await expect(game).toMatchScreenSnapshot('styled-later');
+    const rebuilt = await launch({ env: { ...process.env, BUILD_ID: '97' } });
+    await rebuilt.expectText('build 97');
+    await assert.rejects(expect(rebuilt).toMatchScreenSnapshot('styled-later', { styles: true, timeout: 300 }), /E2E TEST FAILED/);
+    assert.equal(fs.readFileSync(path.join(snapshotsDir, 'styled-later.snap'), 'utf8').includes('build 42'), true, 'the text snapshot was not re-recorded');
+    assert.equal(fs.existsSync(path.join(snapshotsDir, 'styled-later.styles.snap')), false);
+    await expect(game).toMatchScreenSnapshot('styled-later', { styles: true });
+    assert.equal(fs.existsSync(path.join(snapshotsDir, 'styled-later.styles.snap')), true, 'recorded once the text matched');
+  });
+});
+
+test('maxDiffCells tolerates small changes, alongside mask and normalize', async ({ game }) => {
   await game.expectText('build 42');
   const opts = { mask: [/build \d+/], normalize: (text) => text.replace(/Narrow|Wide/, 'LAYOUT') };
   await expect(game).toMatchScreenSnapshot('masked', opts);

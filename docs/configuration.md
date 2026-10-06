@@ -32,7 +32,7 @@ These are passed straight through to `launchGame()` for every test. RPGWright do
 | `colorDepth` | *(unset: `env` is used as-is)* | The color support to advertise: `'none'`, `16`, `256` or `'truecolor'`. See [below](#colordepth-and-locale). |
 | `locale` | *(unset)* | Sets `LANG` and `LC_ALL`, e.g. `'en_US.UTF-8'` or `'C'`. |
 | `scrollback` | `1000` | How many lines that scroll off the top of the screen are kept, for `toHaveScrollbackText()`. |
-| `homeFiles` | *(none)* | Files to create in a fresh, isolated `HOME` before the app starts: `{ 'relative/path': 'contents' }`. See [Writing tests](./writing-tests.md#fixtures). |
+| `homeFiles` | *(none)* | Files to create in a fresh, isolated `HOME` before the app starts: `{ 'relative/path': 'contents' }`. Applied by the runner's fixtures, not by `launchGame()` itself. See [Writing tests](./writing-tests.md#fixtures). |
 | `tty` | `true` | Set `false` to run the app with plain pipes instead of a terminal, to test what it does when its output is piped (no colors, no prompts). Assertions work the same. |
 | `historySize` | `500` | How many past screens to keep for `expectSeen()`, `expectNoFlicker()` and traces. |
 | `focus` | `{ style: { inverse: true }, cursor: true }` | How your app shows focus, for `toBeFocused()`: any of `style`, `marker` and `cursor`. See [Layout and focus](./layout-and-focus.md#focus). |
@@ -55,7 +55,7 @@ These are specific to `rpgwright test` itself, not to any individual launched pr
 | `watchPaths` | `[]` | Extra directories `--watch` watches, relative to the config file. |
 | `retries` | `0` | How many times to rerun a failed test. A test that passes on a retry is reported as flaky. See [Writing tests](./writing-tests.md#retries-and-repeated-runs). |
 | `trace` | `'off'` | Write an HTML trace per test: `'on'`, `'off'`, or `'retain-on-failure'`. See [Diagnostics](./diagnostics.md#traces). |
-| `outputDir` | `test-results` next to the config file | Where traces are written. |
+| `outputDir` | `test-results` next to the config file | Where traces, recordings and the `json`/`junit` reports are written. |
 | `reporter` | `'list'` | Output style: `'list'`, `'dot'`, `'json'`, `'junit'` or `'github'`, or a list of several (`['list', ['junit', { outputFile: 'e2e.xml' }]]`). See [CLI reference](./cli.md#reporter-styles). An unrecognized value fails immediately with a clear error rather than silently falling back to the default. |
 
 ## `--config <path>`
@@ -126,7 +126,7 @@ module.exports = {
 };
 ```
 
-Each service is started in order, with `args`, `cwd` (relative to the config file) and `env` as you'd expect, and the run waits until it's ready: until its output contains `readyText` (a string or RegExp), until `readyPort` accepts connections, or not at all if you give neither. If a service exits first, or isn't ready within `timeout` (default 30 seconds), the run stops with the end of the service's output. Services are stopped (SIGTERM, then SIGKILL after 3 seconds) when the run ends.
+Each service is started in order, with `args`, `cwd` (relative to the config file) and `env` (which, like the top-level `env`, replaces the environment rather than adding to it: write `env: { ...process.env, PORT: '4000' }` to add a variable), and the run waits until it's ready: until its output contains `readyText` (a string or RegExp), until `readyPort` accepts connections, or not at all if you give neither. If a service exits first, or isn't ready within `timeout` (default 30 seconds), the run stops with the end of the service's output. Services are stopped (SIGTERM, then SIGKILL after 3 seconds) when the run ends.
 
 `globalSetup` runs once after the services are up and before any test. If it returns a function, that runs once after all the tests. `globalTeardown` runs after that, and then the services are stopped. Nothing is started for `--list` or when no tests are selected.
 

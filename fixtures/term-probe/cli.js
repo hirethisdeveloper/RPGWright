@@ -83,13 +83,15 @@ const MODES = {
   toast() {
     onInput(() => {
       out('\x1b[3;1HSaved!');
-      setTimeout(() => out('\x1b[3;1H\x1b[2K'), 20);
+      // Long enough to always arrive as a separate chunk, even on a loaded
+      // machine; short enough to be gone before waitForStable returns.
+      setTimeout(() => out('\x1b[3;1H\x1b[2K'), 100);
     });
     out('READY\r\n');
   },
 
   // Any key redraws the screen. `argv[3]` "flicker" clears it in one write
-  // and draws the new content ~30ms later in another; "clean" does both in
+  // and draws the new content ~100ms later in another; "clean" does both in
   // a single write.
   redraw() {
     const draw = (n) => `\x1b[H\x1b[2JREADY\r\nframe ${n}\r\n`;
@@ -98,7 +100,7 @@ const MODES = {
       n += 1;
       if (process.argv[3] === 'flicker') {
         out('\x1b[H\x1b[2J');
-        setTimeout(() => out(draw(n)), 30);
+        setTimeout(() => out(draw(n)), 100);
       } else {
         out(draw(n));
       }
@@ -108,9 +110,17 @@ const MODES = {
 
   // Turns on mouse reporting (private mode `argv[3]`, default 1000, plus
   // `argv[4]` if given, e.g. 1006 for SGR encoding), then echoes input.
+  // With a trailing "hex" argument, echoes the raw input bytes in hex
+  // instead (legacy reports can carry bytes that aren't valid UTF-8).
   mouse() {
-    onInput((data) => out(`GOT ${JSON.stringify(data)}\r\n`));
-    const modes = [process.argv[3] || '1000', process.argv[4]].filter(Boolean);
+    const args = process.argv.slice(3);
+    if (args.includes('hex')) {
+      if (process.stdin.isTTY) process.stdin.setRawMode(true);
+      process.stdin.on('data', (data) => out(`HEX ${data.toString('hex')}\r\n`));
+    } else {
+      onInput((data) => out(`GOT ${JSON.stringify(data)}\r\n`));
+    }
+    const modes = [args[0] || '1000', args[1]].filter((m) => m && m !== 'hex');
     out(`${modes.map((m) => `\x1b[?${m}h`).join('')}READY\r\n`);
   },
 
@@ -153,6 +163,21 @@ const MODES = {
     const count = Number(process.argv[3] || 50);
     for (let i = 1; i <= count; i += 1) out(`line ${i}\r\n`);
     out('READY');
+  },
+
+  // Writes a few MB of styled output, then a marker, then exits right away:
+  // the exit arrives while the end of the output is still being parsed.
+  flood() {
+    out('\x1b[31mab\x1b[0m'.repeat(300000));
+    // Exit once the write is flushed: to a pipe, an immediate exit could
+    // drop the end of it.
+    process.stdout.write('\r\nDONE\r\n', () => process.exit(0));
+  },
+
+  // Kills itself with SIGKILL once it gets a keystroke.
+  crash() {
+    onInput(() => process.kill(process.pid, 'SIGKILL'));
+    out('READY\r\n');
   },
 
   // Echoes each stdin chunk as its JSON-escaped bytes, one chunk per line.

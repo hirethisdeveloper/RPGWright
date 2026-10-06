@@ -2,11 +2,12 @@
 
 const net = require('node:net');
 const { spawnPipe } = require('../src/pty');
+const { matchesNeedle } = require('../src/assertions');
 
 const DEFAULT_READY_TIMEOUT = 30000;
 const STOP_GRACE_MS = 3000;
 
-function portIsOpen(port, host = '127.0.0.1') {
+function canConnect(port, host) {
   return new Promise((resolve) => {
     const socket = net.connect({ port, host });
     socket.once('connect', () => {
@@ -17,8 +18,14 @@ function portIsOpen(port, host = '127.0.0.1') {
   });
 }
 
-function matches(output, needle) {
-  return needle instanceof RegExp ? needle.test(output) : output.includes(needle);
+// A server listening on "localhost" may have bound IPv6 only.
+async function portIsOpen(port) {
+  return (await canConnect(port, '127.0.0.1')) || canConnect(port, '::1');
+}
+
+function describeExit(exit) {
+  if (exit.error) return `couldn't be started (${exit.error})`;
+  return `exited (${exit.signal ? `signal ${exit.signal}` : `code ${exit.exitCode}`})`;
 }
 
 /**
@@ -44,9 +51,9 @@ async function startService(service) {
   const deadline = Date.now() + (service.timeout ?? DEFAULT_READY_TIMEOUT);
   for (;;) {
     const exit = handle.getExitInfo();
-    if (exit) throw fail(`exited (code ${exit.exitCode}) before it was ready`);
+    if (exit) throw fail(`${describeExit(exit)} before it was ready`);
     if (service.readyText === undefined && service.readyPort === undefined) break;
-    if (service.readyText !== undefined && matches(output, service.readyText)) break;
+    if (service.readyText !== undefined && matchesNeedle(output, service.readyText)) break;
     if (service.readyPort !== undefined && (await portIsOpen(service.readyPort))) break;
     if (Date.now() > deadline) throw fail(`wasn't ready within ${service.timeout ?? DEFAULT_READY_TIMEOUT}ms`);
     await new Promise((r) => setTimeout(r, 50));
@@ -57,7 +64,14 @@ async function startService(service) {
     async stop() {
       if (handle.getExitInfo()) return;
       handle.kill('SIGTERM');
-      const exited = await Promise.race([handle.waitForExit(), new Promise((r) => setTimeout(() => r(null), STOP_GRACE_MS))]);
+      let graceTimer;
+      const exited = await Promise.race([
+        handle.waitForExit(),
+        new Promise((r) => {
+          graceTimer = setTimeout(() => r(null), STOP_GRACE_MS);
+        }),
+      ]);
+      clearTimeout(graceTimer);
       if (!exited) {
         handle.kill('SIGKILL');
         await handle.waitForExit();
