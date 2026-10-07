@@ -69,6 +69,10 @@ GameDriver  (game.js — public API)
 - Prefer extending an existing file/function over creating a new one.
 - No phase/plan references in source comments — that context belongs in commit messages and `agent_docs/`.
 
+## Git attribution
+
+Claude-assisted work is credited here, once: `Co-Authored-By: Claude <noreply@anthropic.com>`. Do not add that trailer (or any other `Co-Authored-By` / "Generated with Claude Code" attribution line) to commit messages or PR descriptions.
+
 ## `agent_docs/` index
 
 - [`agent_docs/pty.md`](./agent_docs/pty.md) — node-pty spawn/write/resize/kill contract, the SIGHUP default-signal trap, process lifecycle. Read before touching `src/pty.js` or anything about process spawning/killing.
