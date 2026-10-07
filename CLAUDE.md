@@ -50,6 +50,7 @@ GameDriver  (game.js — public API)
 - `runner/test.js` — the authoring API (`test`/`describe` and their `skip`/`only`/`fixme`/`fail` variants, hooks, `test.use`, `test.setTimeout`/`slow`/`step`/`info`) and its per-file scope tree (`_beginFile`/`_collect`/`_scopeChain`), re-exported with `expect` as `rpgwright/test`.
 - `runner/fixtures.js` — lazy fixtures: reading destructured fixture names, and the per-test scope that creates/tears down built-ins (`game`, `viewport`, `launch`, `tmpHome`, `testInfo`) and `test.extend` fixtures.
 - `runner/expect.js` — `expect(game).toX()` and `expect(locator).toX()` sugar, delegating straight to `GameDriver`'s `expect*` methods.
+- `runner/ui.js` — the `--ui` reporter: owns the terminal (alt screen, always restored), draws the running test's live screen (`game.observe` + `renderScreenAnsi`) with header/footer, then prints the shared summary.
 - `runner/trace.js` — per-test HTML trace files (`trace: on | retain-on-failure`) and asciinema `.cast` recordings, built from `game.getTrace()`.
 - `runner/services.js` — background `services` (ready by output text or port) and `globalSetup`/`globalTeardown` around a run.
 - `runner/reporter.js` — built-in reporters: console `list`/`dot` (sharing one summary/failure-block printer that prints §9 blocks), file-writing `json`/`junit`, and `github` annotations; several can run at once.

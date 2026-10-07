@@ -36,6 +36,7 @@ const {
 } = require('./layout');
 
 const UPDATE_EVENT = 'update';
+const SCREEN_EVENT = { type: 'screen' };
 // Input actions start a new "since" window for expectSeen, expectNoFlicker
 // and toHaveBell.
 const INPUT_ACTIONS = new Set(['press', 'type', 'paste', 'mouse', 'resize']);
@@ -246,7 +247,10 @@ async function launchGame({
     recordEvent('o', chunk);
     parsed = terminal
       .write(chunk, recordFrame)
-      .then(() => updates.emit(UPDATE_EVENT))
+      .then(() => {
+        updates.emit(UPDATE_EVENT);
+        notify(SCREEN_EVENT);
+      })
       .catch(() => {});
   });
 
@@ -262,6 +266,28 @@ async function launchGame({
     if (!ptyHandle.getExitInfo()) ptyHandle.write(reply);
   });
 
+  // Live observers (see observe()). Events are only built when someone is
+  // listening, and a throwing listener never reaches the driver.
+  const observers = new Set();
+  function notify(event) {
+    if (observers.size === 0) return;
+    const payload = typeof event === 'function' ? event() : event;
+    for (const listener of [...observers]) {
+      try {
+        listener(payload);
+      } catch {
+        // an observer's failure is its own
+      }
+    }
+  }
+
+  function observe(listener) {
+    observers.add(listener);
+    return { dispose: () => observers.delete(listener) };
+  }
+
+  exitedAndParsed().then((exitInfo) => notify(() => ({ type: 'exit', exitInfo })));
+
   function onUpdate(listener) {
     updates.on(UPDATE_EVENT, listener);
     return { dispose: () => updates.off(UPDATE_EVENT, listener) };
@@ -276,6 +302,7 @@ async function launchGame({
     if (!stopped) record.bells = terminal.getSignals().bellCount;
     captureInto(record);
     actions.push(record);
+    notify(() => ({ type: 'action', action: record }));
     return record;
   }
 
@@ -555,6 +582,7 @@ async function launchGame({
       throw err;
     } finally {
       stepDepth -= 1;
+      notify(() => ({ type: 'action', action: record }));
     }
   }
 
@@ -814,6 +842,7 @@ async function launchGame({
     terminal.resize(cols, rows);
     recordEvent('r', `${cols}x${rows}`);
     recordAction('resize', `${cols}, ${rows}`, true);
+    notify(SCREEN_EVENT);
   }
 
   async function stop(opts = {}) {
@@ -827,6 +856,11 @@ async function launchGame({
     finalScreen = { grid: terminal.getScreenCells(), cursor: terminal.getCursor() };
     terminal.dispose();
     return exitInfo;
+  }
+
+  // The cell grid as it is now, or as it was when stop() ran.
+  function getScreenCells() {
+    return finalScreen ? finalScreen.grid : terminal.getScreenCells();
   }
 
   function getScreenText() {
@@ -889,6 +923,8 @@ async function launchGame({
     resize,
     stop,
     getScreenText,
+    getScreenCells,
+    observe,
     renderHtml,
     getTrace,
     actions,

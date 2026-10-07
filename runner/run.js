@@ -6,7 +6,8 @@ const { spawn } = require('node:child_process');
 const { loadConfig, validateTrace, MIN } = require('./config');
 const { shouldWriteTrace, writeTrace } = require('./trace');
 const { discoverTestFiles } = require('./discover');
-const { createReporter } = require('./reporter');
+const { createReporter, combineReporters, FILE_REPORTERS } = require('./reporter');
+const { createUiReporter } = require('./ui');
 const testModule = require('./test');
 const { createFixtureScope, requestedFixtures } = require('./fixtures');
 const { startRunEnvironment } = require('./services');
@@ -27,6 +28,7 @@ const BOOLEAN_FLAGS = {
   '--update-snapshots': 'updateSnapshots',
   '--fail-on-flaky': 'failOnFlaky',
   '--watch': 'watch',
+  '--ui': 'ui',
 };
 // Value flags that must be integers, and the smallest value each allows.
 const INTEGER_FLAGS = {
@@ -66,6 +68,9 @@ function parseArgs(args) {
       throw new Error(`${flag} requires ${min === 0 ? 'a non-negative' : 'a positive'} integer.`);
     }
     opts[key] = n;
+  }
+  if (opts.ui && opts.watch) {
+    throw new Error('--ui can\'t be combined with --watch: the UI owns the terminal for a single run. Use one or the other.');
   }
   return opts;
 }
@@ -234,6 +239,7 @@ async function runTest(t, chain, config, cliOptions, holder, attempt) {
     defs: t.fixtureDefs,
     launchOptions,
     testInfo: info,
+    onGame: cliOptions.onGame,
   });
   holder.games = fixtureScope.games;
   const run = { games: fixtureScope.games, info };
@@ -326,6 +332,7 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
 
     const failedSetup = chain.find((s) => s.beforeAllError);
     for (let retry = 0; ; retry += 1) {
+      if (reporter.testStarted) reporter.testStarted(t.name, meta, { retry });
       const testStart = Date.now();
       const holder = {};
       let error = null;
@@ -382,8 +389,8 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
 // file order, keeping the output identical to a serial run's.
 function bufferedReporter() {
   const events = [];
-  const buffer = { flushTo: (reporter) => events.forEach(([method, args]) => reporter[method](...args)) };
-  for (const method of ['fileStarted', 'testPassed', 'testFailed', 'testSkipped']) {
+  const buffer = { flushTo: (reporter) => events.forEach(([method, args]) => reporter[method] && reporter[method](...args)) };
+  for (const method of ['fileStarted', 'testStarted', 'testPassed', 'testFailed', 'testSkipped']) {
     buffer[method] = (...args) => events.push([method, args]);
   }
   return buffer;
@@ -465,6 +472,22 @@ function collectFiles(files) {
 }
 
 /**
+ * How a run reports: the reporter spec and worker count, from the CLI
+ * options and the config. --ui takes the terminal for itself, so it runs
+ * one file at a time and keeps only the reporters that write files.
+ */
+function resolveOutput({ ui, reporter, workers }, config) {
+  // --reporter list,github runs several, like a list in the config.
+  const flagged = reporter && reporter.includes(',') ? reporter.split(',') : reporter;
+  const spec = flagged || config.reporter;
+  if (!ui) return { reporterSpec: spec, workers: workers ?? config.workers };
+  const fileReporters = (Array.isArray(spec) ? spec : [spec]).filter((entry) =>
+    FILE_REPORTERS.includes(Array.isArray(entry) ? entry[0] : entry),
+  );
+  return { reporterSpec: fileReporters.length > 0 ? fileReporters : null, workers: 1 };
+}
+
+/**
  * Discovers every test file matching the resolved config, collects all of
  * their tests up front (so test.only and filters apply across files), then
  * runs them file by file. Each test gets the fixtures it asks for, set up
@@ -486,6 +509,8 @@ async function runTests({
   retries,
   repeatEach = 1,
   workers,
+  ui,
+  stdout = process.stdout,
 } = {}) {
   const config = loadConfig({ configPath, cwd });
   const traceMode = trace === undefined ? config.trace : validateTrace(trace, '--trace');
@@ -511,9 +536,14 @@ async function runTests({
     return { passed: 0, failed: 0, skipped: 0, flaky: 0 };
   }
 
-  // --reporter list,github runs several, like a list in the config.
-  const reporters = reporter && reporter.includes(',') ? reporter.split(',') : reporter;
-  const activeReporter = createReporter(reporters || config.reporter, { outputDir: config.outputDir, cwd });
+  if (ui && !stdout.isTTY) {
+    throw new Error('--ui needs an interactive terminal, but stdout is not a TTY (is the output piped or redirected?). Run without --ui.');
+  }
+  const output = resolveOutput({ ui, reporter, workers }, config);
+  const reporterOptions = { outputDir: config.outputDir, cwd };
+  const fileReporter = output.reporterSpec && createReporter(output.reporterSpec, reporterOptions);
+  const uiReporter = ui ? createUiReporter({ stdout, total: plan.reduce((n, { tests }) => n + tests.length, 0) }) : null;
+  const activeReporter = uiReporter ? combineReporters(fileReporter ? [uiReporter, fileReporter] : [uiReporter]) : fileReporter;
   const start = Date.now();
 
   if (files.length === 0) {
@@ -536,14 +566,24 @@ async function runTests({
   let teardownEnvironment = async () => {};
   try {
     if (plan.length > 0) teardownEnvironment = await startRunEnvironment(config);
+    if (uiReporter && plan.length > 0) uiReporter.start();
     await runPlan(plan, {
       config,
-      cliOptions: { updateSnapshots, trace: traceMode, retries: retries ?? config.retries, traceNames: new Set() },
+      cliOptions: {
+        updateSnapshots,
+        trace: traceMode,
+        retries: retries ?? config.retries,
+        traceNames: new Set(),
+        onGame: uiReporter ? uiReporter.onGame : undefined,
+      },
       reporter: activeReporter,
       budget,
-      workers: workers ?? config.workers,
+      workers: output.workers,
     });
   } finally {
+    // Give the terminal back before anything else is printed (or an error
+    // propagates to the CLI's own message).
+    if (uiReporter) uiReporter.close();
     await teardownEnvironment();
     process.off('unhandledRejection', onUnhandled);
   }
@@ -642,4 +682,4 @@ async function runCli(args) {
   process.exitCode = totals.failed > 0 || totals.unhandled > 0 || (options.failOnFlaky && totals.flaky > 0) ? 1 : 0;
 }
 
-module.exports = { runTests, runCli, parseArgs };
+module.exports = { runTests, runCli, parseArgs, resolveOutput };

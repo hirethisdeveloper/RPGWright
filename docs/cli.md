@@ -45,6 +45,7 @@ npx rpgwright test --grep @smoke
 | `--fail-on-flaky` | Fail the run if any test only passed on a retry. |
 | `--workers <n>` | Run up to `n` test files at the same time; overrides the config's `workers`. See [Running tests in parallel](#running-tests-in-parallel). |
 | `--watch` | Run the tests, then run them again whenever a file changes. See [Watch mode](#watch-mode). |
+| `--ui` | Watch each test's live terminal screen full-screen while the suite runs. See [UI mode](#ui-mode). |
 | `--repeat-each <n>` | Run every selected test `n` times, named `[repeat i/n]`. |
 | `--trace <mode>` | Write an HTML trace for each test: `on`, `off`, or `retain-on-failure` (only for failing tests). Overrides the config's `trace`. See [Diagnostics](./diagnostics.md#traces). |
 
@@ -134,6 +135,25 @@ Every test already gets its own app process, so tests in different files only co
 ### Watch mode
 
 `rpgwright test --watch` runs the tests, then waits. When a test file changes, it reruns that file. When any other file changes, it reruns everything you selected. By default it watches the test directory and the config file's directory. If your app's source lives elsewhere, add it with `watchPaths: ['../src']` in the config. Press Ctrl+C to stop.
+
+### UI mode
+
+`rpgwright test --ui` takes over your terminal and shows the test that is running right now, live. The screen is redrawn in place as the app changes, instead of scrolling:
+
+- **Header:** the test file and name, how far through the run you are (`3/12`), how many tests have passed, failed and been skipped so far, and how long the test and the whole run have taken.
+- **The app's screen**, drawn in a box at the app's own size (`cols`×`rows`), with its colors and cursor. If your terminal is smaller than that, the top-left part that fits is shown and the box's label says so (`100×30 (showing 78×18)`). Resizing your terminal re-draws the layout.
+- **Footer:** the `test.step` you're inside, the last action (`press "Enter" ✓`), and the test's status (`RUNNING`, `PASSED`, or `FAILED` with the first line of its error).
+
+When the run ends, the terminal goes back to how it was and the usual summary and full failure reports are printed, exactly as `list` prints them. Anything your tests print with `console.log` during the run is printed then too. The exit code is the same as without `--ui`. The terminal is also restored if you press Ctrl+C or the run crashes.
+
+`--ui` changes how some other options behave:
+
+- **Workers:** tests run one file at a time (`workers` is forced to `1`), so there's only ever one screen to show.
+- **Reporters:** console reporters (`list`, `dot`, `github`) are replaced by the UI. File reporters (`json`, `junit`) from your config or `--reporter` still write their files.
+- **Watch mode:** `--ui` can't be combined with `--watch`; the run stops with an error.
+- **Output must be a terminal.** If stdout is piped or redirected (CI logs, `| tee`), `--ui` stops with an error. Run without it there.
+
+A test that launches more than one process (`launch()`) shows the first one.
 
 ### Exit codes
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`rpgwright test --ui`:** a full-screen live view of the running test: the app's screen redrawn in place at its own size, with the test's name, progress, pass/fail counts, current step and last action. On finish the terminal is restored and the usual summary and failure reports are printed. Runs with one worker, keeps `json`/`junit` file reporters, requires a terminal, and can't be combined with `--watch`.
+
 ## 0.2.0
 
 A large feature release, with a few breaking changes (listed at the end).

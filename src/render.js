@@ -7,6 +7,9 @@
  * game.renderHtml() and the runner's trace files. No external resources;
  * pure functions of the grid.
  *
+ * renderScreenAnsi draws the same grid as SGR-styled text rows for a real
+ * terminal, passing palette indices through untouched.
+ *
  * Palette indices are drawn with xterm's default colors. That's one
  * plausible theme, not the truth: what "red" looks like is up to the
  * user's terminal, which is why assertions compare indices, never these.
@@ -43,6 +46,10 @@ function escapeHtml(text) {
   return text.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
 }
 
+function isCursorCell(cursor, x, y) {
+  return Boolean(cursor && cursor.visible && cursor.x === x && cursor.y === y);
+}
+
 function cellCss(cell, isCursor) {
   let fg = cssColor(cell.fg, THEME.fg);
   let bg = cssColor(cell.bg, THEME.bg);
@@ -76,7 +83,7 @@ function renderScreenFragment(grid, cursor = null) {
     };
     row.forEach((cell, x) => {
       if (cell.width === 0) return;
-      const isCursor = Boolean(cursor && cursor.visible && cursor.x === x && cursor.y === y);
+      const isCursor = isCursorCell(cursor, x, y);
       const css = cellCss(cell, isCursor);
       const ch = cell.ch === '' ? ' ' : cell.ch;
       if (cell.width === 2) {
@@ -113,4 +120,52 @@ ${renderScreenFragment(grid, cursor)}
 `;
 }
 
-module.exports = { renderScreenFragment, renderScreenHtml, paletteColor, escapeHtml, SCREEN_CSS };
+function sgrColor(color, base) {
+  if (color.rgb) {
+    const n = parseInt(color.rgb.slice(1), 16);
+    return `${base + 8};2;${n >> 16};${(n >> 8) & 255};${n & 255}`;
+  }
+  const i = color.palette;
+  if (i < 8) return `${base + i}`;
+  if (i < 16) return `${base + 60 + i - 8}`;
+  return `${base + 8};5;${i}`;
+}
+
+function cellSgr(cell, inverse) {
+  const codes = [];
+  if (cell.fg) codes.push(sgrColor(cell.fg, 30));
+  if (cell.bg) codes.push(sgrColor(cell.bg, 40));
+  if (cell.bold) codes.push(1);
+  if (cell.dim) codes.push(2);
+  if (cell.italic) codes.push(3);
+  if (cell.underline) codes.push(4);
+  if (inverse) codes.push(7);
+  if (cell.invisible) codes.push(8);
+  if (cell.strike) codes.push(9);
+  return codes.join(';');
+}
+
+/**
+ * One SGR-styled string per grid row, each starting from and ending in the
+ * reset state, with no cursor movement: the caller positions the rows. A
+ * visible cursor is drawn as an inverse-toggled cell.
+ */
+function renderScreenAnsi(grid, cursor = null) {
+  return grid.map((row, y) => {
+    let out = '';
+    let current = '';
+    row.forEach((cell, x) => {
+      if (cell.width === 0) return;
+      const inverse = Boolean(cell.inverse) !== isCursorCell(cursor, x, y);
+      const sgr = cellSgr(cell, inverse);
+      if (sgr !== current) {
+        out += sgr ? `\x1b[0;${sgr}m` : '\x1b[0m';
+        current = sgr;
+      }
+      out += cell.ch === '' ? ' ' : cell.ch;
+    });
+    return `${out}\x1b[0m`;
+  });
+}
+
+module.exports = { renderScreenFragment, renderScreenHtml, renderScreenAnsi, paletteColor, escapeHtml, SCREEN_CSS };

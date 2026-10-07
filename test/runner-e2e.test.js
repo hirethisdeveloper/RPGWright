@@ -1006,3 +1006,45 @@ test('types are stripped and the test runs', async ({ game, viewport }) => {
   assert.match(result.stdout, /typed\.rpg\.test\.ts[\s\S]*✓ types are stripped and the test runs/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('rpgwright test --ui: runs the menu-nav suite in a real terminal, restoring it and printing the summary after', async () => {
+  const { spawnPty } = require('../src/pty');
+  const handle = spawnPty({
+    command: process.execPath,
+    args: [CLI, 'test', '--ui', '--config', 'test/rpg/menu-nav/rpgwright.config.js'],
+    cwd: REPO_ROOT,
+    cols: 100,
+    rows: 40,
+  });
+  let output = '';
+  handle.onData((chunk) => {
+    output += chunk;
+  });
+  let timer;
+  const exit = await Promise.race([
+    handle.waitForExit(),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        handle.kill('SIGKILL');
+        reject(new Error(`--ui run did not finish:\n${output}`));
+      }, 90000);
+    }),
+  ]).finally(() => clearTimeout(timer));
+  // Let the last of the output drain.
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(exit.exitCode, 0, output);
+  const enter = output.indexOf('\x1b[?1049h');
+  const leave = output.lastIndexOf('\x1b[?1049l');
+  assert.ok(enter >= 0, 'entered the alternate screen');
+  assert.ok(leave > enter, 'left the alternate screen after entering it');
+  assert.match(output.slice(enter, leave), /RPGWright/);
+  assert.match(output.slice(leave), /\d+ passed/);
+  assert.doesNotMatch(output.slice(leave), /failed/);
+});
+
+test('rpgwright test --ui: fails clearly when the output is not a terminal', () => {
+  const result = runCli(['test', '--ui', '--config', 'test/rpg/menu-nav/rpgwright.config.js'], { cwd: REPO_ROOT });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--ui needs an interactive terminal/);
+  assert.doesNotMatch(result.stdout, /\x1b\[\?1049h/);
+});

@@ -21,6 +21,7 @@ Test options:
   --repeat-each <n>        Run every selected test n times
   --workers <n>            Run up to n test files at once
   --watch                  Rerun when files change
+  --ui                     Show each test's live screen full-screen while running
 
 Filters: a path substring selects matching test files; "file:line" selects
 the test (or describe block) declared on that line.
