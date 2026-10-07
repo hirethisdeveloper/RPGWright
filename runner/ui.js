@@ -1,7 +1,7 @@
 'use strict';
 
 const util = require('node:util');
-const { renderScreenAnsi } = require('../src/render');
+const { renderScreenAnsi, stripAnsi } = require('../src/render');
 const { createState, recordPass, printSummary } = require('./reporter');
 
 // Alternate screen, hidden cursor, no autowrap (a row that is a column too
@@ -78,8 +78,8 @@ function decodeKeys(text) {
 // sequences and control characters (an error message's colors, a newline
 // in an action's detail) taken out so they can't move the cursor.
 function fit(text, width) {
-  const chars = [...text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/[\x00-\x1f\x7f]/g, ' ')];
-  if (chars.length <= width) return text + ' '.repeat(width - chars.length);
+  const chars = [...stripAnsi(text).replace(/[\x00-\x1f\x7f]/g, ' ')];
+  if (chars.length <= width) return chars.join('') + ' '.repeat(width - chars.length);
   return width <= 0 ? '' : `${chars.slice(0, width - 1).join('')}…`;
 }
 
@@ -103,17 +103,186 @@ function duration(ms) {
   return ms < 1000 ? `${ms}ms` : seconds(ms);
 }
 
+// The rows every view is built from: an inverse title bar, a dim info row,
+// and a status badge (colored by `status`) followed by its detail.
+function titleBar(text, width) {
+  return `${INVERSE}${BOLD}${fit(` ${text}`, width)}${RESET}`;
+}
+
+function infoBar(text, width) {
+  return `${DIM}${fit(` ${text}`, width)}${RESET}`;
+}
+
+function statusBar(status, label, detail, width) {
+  return `${STATUS_COLOR[status] || ''}${INVERSE}${BOLD} ${label} ${RESET}${fit(` ${detail}`, width - label.length - 2)}`;
+}
+
+// One line of an error message, indented and in the failure color.
+function errorLine(text, width) {
+  return `${STATUS_COLOR.failed}${fit(`   ${text}`, width)}${RESET}`;
+}
+
+// An action record as the footer shows it: `press "Enter" ✓`.
+function actionText(action) {
+  if (!action) return '-';
+  const mark = action.ok === true ? ' ✓' : action.ok === false ? ' ✖' : ' …';
+  return `${action.type}${action.detail ? ` ${action.detail}` : ''}${mark}`;
+}
+
 /**
- * The --ui reporter: takes over the terminal (alternate screen) and redraws
- * the running test's live screen in place, framed at the app's own size,
- * with a header (file, test, progress, counts, elapsed) and a footer
- * (current step, last action, status). Redraws are coalesced to at most one
- * write per FRAME_MS, each a complete frame in one stdout.write.
+ * The header rows, then `screen` ({ grid, cursor }, or null for the
+ * `empty` message) framed at its own size and centered, clipped to what
+ * fits between the header and the footer, then the footer rows.
+ */
+function screenLines({ width, height, header, footer, screen, empty }) {
+  const lines = [...header];
+  if (!screen) {
+    lines.push('', fit(`  ${empty}`, width));
+  } else {
+    const cols = screen.grid.length ? screen.grid[0].length : 0;
+    const rows = screen.grid.length;
+    const visCols = Math.max(0, Math.min(cols, width - 2));
+    const visRows = Math.max(0, Math.min(rows, height - header.length - footer.length - 2));
+    const pad = ' '.repeat(Math.max(0, Math.floor((width - visCols - 2) / 2)));
+    const clipped = visCols < cols || visRows < rows;
+    const label = ` ${cols}×${rows}${clipped ? ` (showing ${visCols}×${visRows})` : ''} `;
+    lines.push(`${pad}${DIM}┌${fit(label, visCols).replace(/ +$/, (m) => '─'.repeat(m.length))}┐${RESET}`);
+    for (const row of renderScreenAnsi(clipGrid(screen.grid, visCols, visRows), screen.cursor)) {
+      lines.push(`${pad}${DIM}│${RESET}${row}${DIM}│${RESET}`);
+    }
+    lines.push(`${pad}${DIM}└${'─'.repeat(visCols)}┘${RESET}`);
+  }
+  lines.push(...footer);
+  return lines;
+}
+
+/**
+ * Owns the terminal for a full-screen view: `start()` enters the alternate
+ * screen and draws `render(width, height)` (an array of rows); `schedule()`
+ * redraws, coalesced to at most one write per FRAME_MS, each a complete
+ * frame in one stdout.write; `startReading()` puts stdin in raw mode and
+ * hands each decoded key to `onKey`. An unref'd 1s tick keeps clocks moving.
  *
- * The terminal is always given back: by close() (which summary() and the
- * run's own cleanup call), and by guards on process exit, SIGINT/SIGTERM
- * and uncaught exceptions. console output during the run is held and
- * printed after leaving the alternate screen, where it stays readable.
+ * The terminal is always given back: by close(), and by guards on process
+ * exit, SIGINT/SIGTERM (re-raised if nobody else handles it) and uncaught
+ * exceptions. close() calls `onClose` first. console output while the
+ * alternate screen is up is held and printed after leaving it, where it
+ * stays readable.
+ */
+function createFullscreen({ stdout, stdin, proc, console: con, now, render, onKey, onClose }) {
+  let started = false;
+  let closed = false;
+  let reading = false;
+  let timer = null;
+  let clock = null;
+  let lastDraw = 0;
+  const heldConsole = [];
+  const originalConsole = {};
+
+  function schedule() {
+    if (!started || closed || timer) return;
+    timer = setTimeout(draw, Math.max(0, FRAME_MS - (now() - lastDraw)));
+  }
+
+  // The whole frame as one string: every row positioned absolutely and
+  // cleared to its end, everything below the last row cleared.
+  function frame() {
+    const width = stdout.columns || 80;
+    const height = stdout.rows || 24;
+    const body = render(width, height)
+      .slice(0, height)
+      .map((line, i) => `\x1b[${i + 1};1H${line}\x1b[K`)
+      .join('');
+    return `${SYNC_BEGIN}${body}${RESET}\x1b[J${SYNC_END}`;
+  }
+
+  function draw() {
+    timer = null;
+    if (!started || closed) return;
+    lastDraw = now();
+    stdout.write(frame());
+  }
+
+  function onData(chunk) {
+    for (const key of decodeKeys(chunk)) {
+      if (closed) return;
+      onKey(key);
+    }
+  }
+
+  function startReading() {
+    if (reading) return;
+    reading = true;
+    if (typeof stdin.setRawMode === 'function') stdin.setRawMode(true);
+    stdin.on('data', onData);
+    stdin.resume();
+  }
+
+  function stopReading() {
+    if (!reading) return;
+    reading = false;
+    stdin.off('data', onData);
+    if (typeof stdin.setRawMode === 'function') stdin.setRawMode(false);
+    stdin.pause();
+  }
+
+  function onSignal(signal) {
+    close();
+    // Nobody else handles it: die from it the way we would have.
+    if (proc.listenerCount(signal) === 0) proc.kill(proc.pid, signal);
+  }
+  const signalHandlers = Object.fromEntries(Object.keys(SIGNALS).map((s) => [s, () => onSignal(s)]));
+
+  function start() {
+    if (started || closed) return;
+    started = true;
+    proc.on('exit', close);
+    proc.on('uncaughtExceptionMonitor', close);
+    for (const [signal, handler] of Object.entries(signalHandlers)) proc.on(signal, handler);
+    if (typeof stdout.on === 'function') stdout.on('resize', schedule);
+    for (const method of CONSOLE_METHODS) {
+      originalConsole[method] = con[method];
+      con[method] = (...args) => heldConsole.push([method, util.format(...args)]);
+    }
+    clock = setInterval(schedule, 1000);
+    if (clock.unref) clock.unref();
+    stdout.write(ENTER);
+    draw();
+  }
+
+  /**
+   * Leaves the alternate screen and restores the cursor, wrapping, raw
+   * mode and console, then prints whatever console output was held.
+   * Idempotent.
+   */
+  function close() {
+    if (closed) return;
+    closed = true;
+    if (!started) return;
+    clearTimeout(timer);
+    clearInterval(clock);
+    stopReading();
+    if (onClose) onClose();
+    proc.off('exit', close);
+    proc.off('uncaughtExceptionMonitor', close);
+    for (const [signal, handler] of Object.entries(signalHandlers)) proc.off(signal, handler);
+    if (typeof stdout.off === 'function') stdout.off('resize', schedule);
+    stdout.write(LEAVE);
+    Object.assign(con, originalConsole);
+    for (const [method, text] of heldConsole.splice(0)) con[method](text);
+  }
+
+  return { start, close, schedule, startReading, isClosed: () => closed };
+}
+
+/**
+ * The --ui reporter: takes over the terminal (via createFullscreen) and
+ * redraws the running test's live screen in place, framed at the app's own
+ * size, with a header (file, test, progress, counts, elapsed) and a footer
+ * (current step, last action, status).
+ *
+ * The terminal is given back by close(), which summary() and the run's own
+ * cleanup call, or by createFullscreen's guards.
  *
  * interactive(session) turns it into the test-selection HUD: stdin goes
  * into raw mode (given back by the same close()), and between runs the
@@ -124,19 +293,11 @@ function duration(ms) {
 function createUiReporter({ stdout = process.stdout, stdin = process.stdin, proc = process, console: con = console, total = 0, now = Date.now } = {}) {
   const state = createState();
   const runStart = now();
-  let started = false;
-  let closed = false;
   let file = '';
   let current = null; // { name, retry, start, status, error, game, subscription, steps, lastAction }
   let lastGrid = null;
-  let timer = null;
-  let clock = null;
-  let lastDraw = 0;
-  const heldConsole = [];
-  const originalConsole = {};
   // Interactive session state; `session` stays null for a plain --ui run.
   let session = null;
-  let reading = false;
   let selected = 0;
   let top = 0;
   let message = '';
@@ -147,10 +308,20 @@ function createUiReporter({ stdout = process.stdout, stdin = process.stdin, proc
 
   const log = (line) => stdout.write(`${line}\n`);
 
-  function schedule() {
-    if (!started || closed || timer) return;
-    timer = setTimeout(draw, Math.max(0, FRAME_MS - (now() - lastDraw)));
-  }
+  const display = createFullscreen({
+    stdout,
+    stdin,
+    proc,
+    console: con,
+    now,
+    render: (width, height) => (session && !running ? hudLines(width, height) : liveLines(width, height)),
+    onKey,
+    onClose() {
+      finish();
+      if (current && current.subscription) current.subscription.dispose();
+    },
+  });
+  const { schedule, close, start } = display;
 
   function screen() {
     const game = current && current.game;
@@ -200,24 +371,15 @@ function createUiReporter({ stdout = process.stdout, stdin = process.stdin, proc
     const title = current ? `${file ? `${file} › ` : ''}${current.name}${current.retry ? ` (retry ${current.retry})` : ''}` : file;
     const elapsed = `test ${current ? seconds((current.end || now()) - current.start) : '-'}  total ${seconds(now() - runStart)}`;
     const paused = session && session.paused ? '   ⏸ PAUSED' : '';
-    return [
-      `${INVERSE}${BOLD}${fit(` RPGWright  ${title}`, width)}${RESET}`,
-      `${DIM}${fit(` ${progressText()}   ${countsText()}   ${elapsed}${paused}`, width)}${RESET}`,
-    ];
+    return [titleBar(`RPGWright  ${title}`, width), infoBar(`${progressText()}   ${countsText()}   ${elapsed}${paused}`, width)];
   }
 
   function footerLines(width) {
     const steps = current ? current.steps.map((s) => s.detail).join(' › ') : '';
-    const action = current && current.lastAction;
-    const mark = action ? (action.ok === true ? ' ✓' : action.ok === false ? ' ✖' : ' …') : '';
-    const last = action ? `${action.type} ${action.detail}${mark}` : '-';
     const status = current ? current.status : 'running';
-    const detail = current && current.error ? current.error.message.split('\n')[0] : `last: ${last}`;
-    const lines = [
-      fit(` step: ${steps || '-'}`, width),
-      `${STATUS_COLOR[status]}${INVERSE}${BOLD} ${status.toUpperCase()} ${RESET}${fit(` ${detail}`, width - status.length - 2)}`,
-    ];
-    if (session) lines.push(`${DIM}${fit(` ${session.paused ? PAUSED_HINTS : RUN_HINTS}`, width)}${RESET}`);
+    const detail = current && current.error ? current.error.message.split('\n')[0] : `last: ${actionText(current && current.lastAction)}`;
+    const lines = [fit(` step: ${steps || '-'}`, width), statusBar(status, status.toUpperCase(), detail, width)];
+    if (session) lines.push(infoBar(session.paused ? PAUSED_HINTS : RUN_HINTS, width));
     return lines;
   }
 
@@ -239,10 +401,7 @@ function createUiReporter({ stdout = process.stdout, stdin = process.stdin, proc
     if (selected >= top + listRows) top = selected - listRows + 1;
     top = Math.max(0, Math.min(top, tests.length - listRows));
     const more = tests.length > listRows ? `   ${top + 1}-${Math.min(top + listRows, tests.length)} of ${tests.length}` : '';
-    const lines = [
-      `${INVERSE}${BOLD}${fit(` RPGWright  ${tests.length} test${tests.length === 1 ? '' : 's'}`, width)}${RESET}`,
-      `${DIM}${fit(` ${countsText()}${more}`, width)}${RESET}`,
-    ];
+    const lines = [titleBar(`RPGWright  ${tests.length} test${tests.length === 1 ? '' : 's'}`, width), infoBar(`${countsText()}${more}`, width)];
     if (tests.length === 0) lines.push(fit('  (no tests)', width));
     for (let i = top; i < Math.min(top + listRows, tests.length); i += 1) lines.push(testRow(tests[i], i === selected, width));
     while (lines.length < HEADER_ROWS + listRows) lines.push('');
@@ -252,56 +411,23 @@ function createUiReporter({ stdout = process.stdout, stdin = process.stdin, proc
     lines.push(`${DIM}${'─'.repeat(width)}${RESET}`);
     lines.push(t ? fit(` ${t.file}:${t.line}   ${t.status}${t.durationMs === null || t.durationMs === undefined ? '' : ` in ${duration(t.durationMs)}`}`, width) : '');
     for (let i = 0; i < ERROR_LINES; i += 1) {
-      lines.push(errorLines[i] === undefined ? '' : `${STATUS_COLOR.failed}${fit(`   ${errorLines[i]}`, width)}${RESET}`);
+      lines.push(errorLines[i] === undefined ? '' : errorLine(errorLines[i], width));
     }
     lines.push(message ? `${BOLD}${fit(` ${message}`, width)}${RESET}` : '');
-    lines.push(`${DIM}${fit(` ${HUD_HINTS}`, width)}${RESET}`);
+    lines.push(infoBar(HUD_HINTS, width));
     return lines;
-  }
-
-  // The whole frame as one string: every row positioned absolutely and
-  // cleared to its end, everything below the last row cleared.
-  function frame() {
-    const width = stdout.columns || 80;
-    const height = stdout.rows || 24;
-    const lines = session && !running ? hudLines(width, height) : liveLines(width, height);
-    const body = lines
-      .slice(0, height)
-      .map((line, i) => `\x1b[${i + 1};1H${line}\x1b[K`)
-      .join('');
-    return `${SYNC_BEGIN}${body}${RESET}\x1b[J${SYNC_END}`;
   }
 
   // The running test: header, its live screen framed at the app's size, footer.
   function liveLines(width, height) {
-    const lines = headerLines(width);
-    const footer = footerLines(width);
-    const shown = screen();
-    if (!shown) {
-      lines.push('', fit(current ? '  (no app launched yet)' : '  (waiting for the first test)', width));
-    } else {
-      const cols = shown.grid.length ? shown.grid[0].length : 0;
-      const rows = shown.grid.length;
-      const visCols = Math.max(0, Math.min(cols, width - 2));
-      const visRows = Math.max(0, Math.min(rows, height - HEADER_ROWS - footer.length - 2));
-      const pad = ' '.repeat(Math.max(0, Math.floor((width - visCols - 2) / 2)));
-      const clipped = visCols < cols || visRows < rows;
-      const label = ` ${cols}×${rows}${clipped ? ` (showing ${visCols}×${visRows})` : ''} `;
-      lines.push(`${pad}${DIM}┌${fit(label, visCols).replace(/ +$/, (m) => '─'.repeat(m.length))}┐${RESET}`);
-      for (const row of renderScreenAnsi(clipGrid(shown.grid, visCols, visRows), shown.cursor)) {
-        lines.push(`${pad}${DIM}│${RESET}${row}${DIM}│${RESET}`);
-      }
-      lines.push(`${pad}${DIM}└${'─'.repeat(visCols)}┘${RESET}`);
-    }
-    lines.push(...footer);
-    return lines;
-  }
-
-  function draw() {
-    timer = null;
-    if (!started || closed) return;
-    lastDraw = now();
-    stdout.write(frame());
+    return screenLines({
+      width,
+      height,
+      header: headerLines(width),
+      footer: footerLines(width),
+      screen: screen(),
+      empty: current ? '(no app launched yet)' : '(waiting for the first test)',
+    });
   }
 
   function onEvent(event) {
@@ -407,87 +533,22 @@ function createUiReporter({ stdout = process.stdout, stdin = process.stdin, proc
     schedule();
   }
 
-  function onData(chunk) {
-    for (const key of decodeKeys(chunk)) {
-      if (closed) return;
-      if (key === 'ctrl+c') {
-        // Quit now: the terminal comes back at once (so a second Ctrl+C is
-        // a real SIGINT), and interactive() resolves once the abort lands.
-        quitting = true;
-        if (running) session.abort();
-        close();
-        return;
-      }
-      if (quitting) continue;
-      if (message) {
-        message = '';
-        schedule();
-      }
-      if (running) onRunKey(key);
-      else onHudKey(key);
+  function onKey(key) {
+    if (key === 'ctrl+c') {
+      // Quit now: the terminal comes back at once (so a second Ctrl+C is
+      // a real SIGINT), and interactive() resolves once the abort lands.
+      quitting = true;
+      if (running) session.abort();
+      close();
+      return;
     }
-  }
-
-  function startReading() {
-    if (reading) return;
-    reading = true;
-    if (typeof stdin.setRawMode === 'function') stdin.setRawMode(true);
-    stdin.on('data', onData);
-    stdin.resume();
-  }
-
-  function stopReading() {
-    if (!reading) return;
-    reading = false;
-    stdin.off('data', onData);
-    if (typeof stdin.setRawMode === 'function') stdin.setRawMode(false);
-    stdin.pause();
-  }
-
-  function onSignal(signal) {
-    close();
-    // Nobody else handles it: die from it the way we would have.
-    if (proc.listenerCount(signal) === 0) proc.kill(proc.pid, signal);
-  }
-  const signalHandlers = Object.fromEntries(Object.keys(SIGNALS).map((s) => [s, () => onSignal(s)]));
-
-  function start() {
-    if (started || closed) return;
-    started = true;
-    proc.on('exit', close);
-    proc.on('uncaughtExceptionMonitor', close);
-    for (const [signal, handler] of Object.entries(signalHandlers)) proc.on(signal, handler);
-    if (typeof stdout.on === 'function') stdout.on('resize', schedule);
-    for (const method of CONSOLE_METHODS) {
-      originalConsole[method] = con[method];
-      con[method] = (...args) => heldConsole.push([method, util.format(...args)]);
+    if (quitting) return;
+    if (message) {
+      message = '';
+      schedule();
     }
-    clock = setInterval(schedule, 1000);
-    if (clock.unref) clock.unref();
-    stdout.write(ENTER);
-    draw();
-  }
-
-  /**
-   * Leaves the alternate screen and restores the cursor, wrapping and
-   * console, then prints whatever console output was held. Idempotent.
-   */
-  function close() {
-    if (closed) return;
-    closed = true;
-    if (!started) return;
-    clearTimeout(timer);
-    clearInterval(clock);
-    stopReading();
-    finish();
-    if (current && current.subscription) current.subscription.dispose();
-    proc.off('exit', close);
-    proc.off('uncaughtExceptionMonitor', close);
-    for (const [signal, handler] of Object.entries(signalHandlers)) proc.off(signal, handler);
-    if (typeof stdout.off === 'function') stdout.off('resize', schedule);
-    stdout.write(LEAVE);
-    Object.assign(con, originalConsole);
-    for (const [method, text] of heldConsole.splice(0)) con[method](text);
+    if (running) onRunKey(key);
+    else onHudKey(key);
   }
 
   return {
@@ -500,10 +561,10 @@ function createUiReporter({ stdout = process.stdout, stdin = process.stdin, proc
      * still close()s it and prints the summary.
      */
     interactive(theSession, { autoRun = false } = {}) {
-      if (closed) return Promise.resolve();
+      if (display.isClosed()) return Promise.resolve();
       session = theSession;
       start();
-      startReading();
+      display.startReading();
       const done = new Promise((resolve) => {
         resolveQuit = resolve;
       });
@@ -553,4 +614,20 @@ function createUiReporter({ stdout = process.stdout, stdin = process.stdin, proc
   };
 }
 
-module.exports = { createUiReporter, clipGrid, decodeKeys, ENTER, LEAVE };
+module.exports = {
+  createUiReporter,
+  createFullscreen,
+  screenLines,
+  titleBar,
+  infoBar,
+  statusBar,
+  errorLine,
+  actionText,
+  fit,
+  seconds,
+  clipGrid,
+  decodeKeys,
+  STATUS_GLYPH,
+  ENTER,
+  LEAVE,
+};

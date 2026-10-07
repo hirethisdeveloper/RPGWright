@@ -439,6 +439,56 @@ test('two processes', async ({ launch }) => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('rpgwright test --save-run: a run file per passing and failing test, readable by readRunFile; none for a skipped one', () => {
+  const { readRunFile } = require('../runner/runfile');
+  const dir = makeProject({
+    'saved.rpg.test.js': `const { test, describe } = require(${TEST_API});
+describe('saved', () => {
+  test('passes', async ({ game }) => {
+    await game.expectText('READY');
+    await game.type('hi');
+    await game.expectText('GOT');
+    await game.resize(30, 6);
+  });
+  test('fails', async ({ game }) => { await game.expectText('never', { timeout: 200 }); });
+  test.skip('skipped', async ({ game }) => {});
+});
+`,
+  });
+  const result = runCli(['test', '--save-run', '--trace', 'retain-on-failure'], { cwd: dir });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const out = path.join(dir, 'test-results');
+  assert.deepEqual(fs.readdirSync(out).filter((f) => f.endsWith('.run.json')).sort(), [
+    'saved-rpg-test--saved-fails.run.json',
+    'saved-rpg-test--saved-passes.run.json',
+  ]);
+  // Alongside --trace: the failing test has both, and its message names both.
+  assert.ok(fs.existsSync(path.join(out, 'saved-rpg-test--saved-fails.trace.html')));
+  assert.match(result.stdout, /Run: .*saved-rpg-test--saved-fails\.run\.json/);
+
+  const passed = readRunFile(path.join(out, 'saved-rpg-test--saved-passes.run.json'));
+  assert.deepEqual(passed.test, { title: 'saved > passes', file: 'saved.rpg.test.js', line: 3 });
+  assert.equal(passed.result.status, 'passed');
+  assert.equal(passed.result.error, null);
+  assert.equal(passed.sessions.length, 1);
+  const [session] = passed.sessions;
+  assert.deepEqual([session.cols, session.rows], [40, 8]);
+  assert.ok(session.events.some(([, type, data]) => type === 'o' && data.includes('READY')));
+  assert.ok(session.events.some(([, type, data]) => type === 'i' && data === 'hi'));
+  assert.ok(session.events.some(([, type, data]) => type === 'r' && data === '30x6'));
+  assert.deepEqual(session.actions.map((a) => a.type).slice(0, 4), ['expectText', 'type', 'expectText', 'resize']);
+  // Actions and events share one clock, in seconds.
+  const lastEvent = session.events[session.events.length - 1][0];
+  assert.ok(session.actions.every((a) => a.t >= 0 && a.t <= lastEvent + 1), JSON.stringify(session.actions));
+
+  const failed = readRunFile(path.join(out, 'saved-rpg-test--saved-fails.run.json'));
+  assert.equal(failed.result.status, 'failed');
+  assert.equal(failed.result.error.message, 'E2E TEST FAILED');
+  assert.match(failed.result.error.report, /Expected:/);
+  assert.doesNotMatch(failed.result.error.report, /Trace: |Run: /);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('rpgwright test: --reporter takes a comma-separated list; --list counts repeats; a file that fails to load is named', () => {
   const dir = makeProject({ 'pair.rpg.test.js': PASSING_PAIR });
   const both = runCli(['test', '--reporter', 'dot,github'], { cwd: dir });

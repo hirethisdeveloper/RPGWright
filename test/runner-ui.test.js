@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { createUiReporter, clipGrid, decodeKeys, ENTER, LEAVE } = require('../runner/ui');
+const { createUiReporter, clipGrid, decodeKeys, fit, actionText, ENTER, LEAVE } = require('../runner/ui');
 
 const FRAME_WAIT_MS = 40;
 const wait = (ms = FRAME_WAIT_MS) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -168,6 +168,18 @@ test('clipGrid: a wide character cut by the edge becomes a space', () => {
   const clipped = clipGrid(grid, 2, 5);
   assert.equal(clipped[0].length, 2);
   assert.deepEqual([clipped[0][1].ch, clipped[0][1].width], [' ', 1]);
+});
+
+test('fit: escapes and control characters never reach the terminal, whether the text fits or is cut', () => {
+  assert.equal(fit('a\nb\x1b[31mc\x1b]0;title\x07', 6), 'a bc  ');
+  assert.equal(fit('abc\ndef', 5), 'abc …');
+});
+
+test('actionText: type, detail and outcome; an action without a detail shows just its type', () => {
+  assert.equal(actionText({ type: 'press', detail: '"Enter"', ok: true }), 'press "Enter" ✓');
+  assert.equal(actionText({ type: 'stop', ok: false }), 'stop ✖');
+  assert.equal(actionText({ type: 'type', detail: '"x"', ok: null }), 'type "x" …');
+  assert.equal(actionText(null), '-');
 });
 
 test('ui: console output during the run is held and printed after leaving the alternate screen', () => {

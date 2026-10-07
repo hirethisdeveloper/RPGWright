@@ -5,6 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { loadConfig, validateTrace, MIN } = require('./config');
 const { shouldWriteTrace, writeTrace } = require('./trace');
+const { writeRunFile } = require('./runfile');
 const { discoverTestFiles } = require('./discover');
 const { createReporter, combineReporters, FILE_REPORTERS } = require('./reporter');
 const { createUiReporter } = require('./ui');
@@ -30,6 +31,7 @@ const BOOLEAN_FLAGS = {
   '--fail-on-flaky': 'failOnFlaky',
   '--watch': 'watch',
   '--ui': 'ui',
+  '--save-run': 'saveRun',
 };
 // Value flags that must be integers, and the smallest value each allows.
 const INTEGER_FLAGS = {
@@ -238,8 +240,9 @@ async function runTest(t, chain, config, cliOptions, holder, attempt) {
   const options = Object.assign({}, ...chain.map((s) => s.use), t.use);
   const launchOptions = { ...config, ...options, scenarioName: t.name };
   if (cliOptions.updateSnapshots) launchOptions.updateSnapshots = true;
-  // Record the session for a .cast file whenever a trace may be written.
-  if (cliOptions.trace !== 'off') launchOptions.record = true;
+  // Record the session whenever a trace (and its .cast) or a run file may
+  // be written.
+  if (cliOptions.trace !== 'off' || cliOptions.saveRun) launchOptions.record = true;
   // A UI session's pause gate, awaited before every game action.
   if (control) launchOptions.gate = control.gate;
   const beforeEach = chain.flatMap((s) => s.hooks.beforeEach);
@@ -385,32 +388,50 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
       if (t.fail && !failedSetup && !aborted) {
         error = error ? null : new Error('Expected this test to fail (test.fail), but it passed.');
       }
-      if (!aborted && holder.games && holder.games.length > 0 && shouldWriteTrace(cliOptions.trace, Boolean(error))) {
+      const duration = Date.now() - testStart;
+      const final = !error || failedSetup || aborted || retry >= cliOptions.retries;
+      const games = holder.games || [];
+      // Where a failure's artifacts went, appended to its message below.
+      const written = [];
+      // One run file per test, for its final attempt only, written before
+      // the message gains those lines.
+      if (cliOptions.saveRun && final && games.length > 0) {
+        const runFile = writeRunFile(config.outputDir, {
+          title: t.name,
+          file: t.file,
+          line: t.line,
+          status: aborted ? 'aborted' : error ? 'failed' : 'passed',
+          durationMs: duration,
+          error,
+          traces: games.map((game) => game.getTrace()),
+        }, { testDir: config.testDir, taken: cliOptions.runNames });
+        written.push(`Run: ${runFile}`);
+      }
+      if (!aborted && games.length > 0 && shouldWriteTrace(cliOptions.trace, Boolean(error))) {
         // One trace per launched process; the second and later are named
         // after their launch order.
-        holder.games.forEach((game, index) => {
+        games.forEach((game, index) => {
           const name = retry > 0 ? `${t.name} (retry ${retry})` : t.name;
-          const written = writeTrace(config.outputDir, {
+          const files = writeTrace(config.outputDir, {
             testName: index === 0 ? name : `${name} (process ${index + 1})`,
             file: t.file,
             passed: !error,
-            durationMs: Date.now() - testStart,
+            durationMs: duration,
             error,
             trace: game.getTrace(),
           }, { testDir: config.testDir, taken: cliOptions.traceNames });
-          if (error) {
-            error.message += `${index === 0 ? '\n' : ''}\nTrace: ${written.trace}`;
-            if (written.cast) error.message += `\nRecording: ${written.cast}`;
-          }
+          written.push(`Trace: ${files.trace}`);
+          if (files.cast) written.push(`Recording: ${files.cast}`);
         });
       }
+      // An abort's error is the session's own, shared object: left alone.
+      if (error && !aborted && written.length > 0) error.message += `\n\n${written.join('\n')}`;
 
-      const duration = Date.now() - testStart;
       if (!error) {
         reporter.testPassed(t.name, duration, { retry }, meta);
         break;
       }
-      if (failedSetup || aborted || retry >= cliOptions.retries) {
+      if (final) {
         reporter.testFailed(t.name, duration, error, { retry }, meta);
         budget.failures += 1;
         break;
@@ -547,12 +568,14 @@ function loadPlan({ cwd = process.cwd(), configPath, filters = [], grep, grepInv
 }
 
 // The per-run options every runFile/runTest call shares.
-function runOptions(config, { updateSnapshots, trace, retries, onGame } = {}) {
+function runOptions(config, { updateSnapshots, trace, retries, saveRun, onGame } = {}) {
   return {
     updateSnapshots,
     trace: trace === undefined ? config.trace : validateTrace(trace, '--trace'),
     retries: retries ?? config.retries,
+    saveRun: Boolean(saveRun ?? config.saveRun),
     traceNames: new Set(),
+    runNames: new Set(),
     onGame,
   };
 }
@@ -595,10 +618,11 @@ async function runTests({
   repeatEach = 1,
   workers,
   ui,
+  saveRun,
   stdout = process.stdout,
 } = {}) {
   const { config, files, plan } = loadPlan({ cwd, configPath, filters, grep, grepInvert, repeatEach });
-  const cliOptions = runOptions(config, { updateSnapshots, trace, retries });
+  const cliOptions = runOptions(config, { updateSnapshots, trace, retries, saveRun });
 
   if (list) {
     for (const { file, tests } of plan) {

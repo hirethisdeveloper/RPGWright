@@ -18,7 +18,7 @@ const HEADER = `const { test, describe } = require(${TEST_API});\nconst log = (g
  * opened as a session the way `rpgwright test --ui` opens one, with a
  * reporter that records every event.
  */
-function openSession(t, body, { retries = 0 } = {}) {
+function openSession(t, body, { retries = 0, saveRun } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-session-'));
   fs.writeFileSync(
     path.join(dir, 'rpgwright.config.js'),
@@ -34,9 +34,9 @@ function openSession(t, body, { retries = 0 } = {}) {
   for (const method of ['fileStarted', 'testStarted', 'testPassed', 'testFailed', 'testSkipped']) {
     reporter[method] = (name) => events.push(`${method} ${name}`);
   }
-  const session = createRunSession(plan, { config, cliOptions: runOptions(config, { retries }), reporter });
+  const session = createRunSession(plan, { config, cliOptions: runOptions(config, { retries, saveRun }), reporter });
   const id = (title) => session.tests.find((entry) => entry.title === title).id;
-  return { session, events, id, log: globalThis.__sessionLog };
+  return { session, events, id, config, log: globalThis.__sessionLog };
 }
 
 async function until(check, label, timeout = 10000) {
@@ -195,6 +195,26 @@ test('after', () => log.push('after'));
   // The session is usable again afterwards.
   await session.run([id('after')]);
   assert.equal(after.status, 'passed');
+});
+
+test('session: with saveRun, an aborted test still gets a run file, status "aborted"', async (t) => {
+  const { readRunFile } = require('../runner/runfile');
+  const { session, id, log, config } = openSession(
+    t,
+    `test('hangs', async ({ game }) => { await game.expectText('READY'); log.push('hanging'); await game.expectText('never', { timeout: 60000 }); });\n`,
+    { saveRun: true },
+  );
+  const run = session.run([id('hangs')]);
+  await until(() => log.includes('hanging'), 'the test to start');
+  session.abort();
+  await run;
+  assert.equal(session.tests[0].status, 'aborted');
+  assert.equal(session.tests[0].error.message, 'Aborted from the UI.', 'the shared abort error is left as is');
+  const saved = readRunFile(path.join(config.outputDir, 'session-rpg-test--hangs.run.json'));
+  assert.equal(saved.result.status, 'aborted');
+  assert.deepEqual(saved.result.error, { message: 'Aborted from the UI.', report: 'Aborted from the UI.' });
+  assert.equal(saved.sessions.length, 1);
+  assert.ok(saved.sessions[0].events.some(([, type, data]) => type === 'o' && data.includes('READY')));
 });
 
 test('session: abort with nothing running does nothing; run() rejects an unknown id and a second concurrent run', async (t) => {

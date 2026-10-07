@@ -100,6 +100,33 @@ test('runOptions: trace and retries come from the config unless given; an unknow
   assert.throws(() => runOptions(config, { trace: 'sometimes' }), /--trace/);
 });
 
+test('parseArgs: --save-run is a boolean flag', () => {
+  assert.deepEqual(parseArgs(['--save-run', '--ui']), { configPath: null, filters: [], saveRun: true, ui: true });
+});
+
+test('runOptions: saveRun comes from the config unless --save-run is given, with its own name set', () => {
+  assert.equal(runOptions({ saveRun: false }).saveRun, false);
+  assert.equal(runOptions({ saveRun: true }).saveRun, true);
+  assert.equal(runOptions({ saveRun: false }, { saveRun: true }).saveRun, true);
+  const options = runOptions({});
+  assert.equal(options.saveRun, false);
+  assert.ok(options.runNames instanceof Set);
+  assert.notEqual(options.runNames, options.traceNames);
+});
+
+test('loadConfig: saveRun defaults to false and must be a boolean', (t) => {
+  const { loadConfig } = require('../runner/config');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-saverun-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const configFile = path.join(dir, 'rpgwright.config.js');
+  fs.writeFileSync(configFile, `module.exports = { command: 'true' };`);
+  assert.equal(loadConfig({ cwd: dir }).saveRun, false);
+  fs.writeFileSync(configFile, `module.exports = { command: 'true', saveRun: true };`);
+  assert.equal(loadConfig({ cwd: dir }).saveRun, true);
+  fs.writeFileSync(configFile, `module.exports = { command: 'true', saveRun: 'yes' };`);
+  assert.throws(() => loadConfig({ cwd: dir }), /"saveRun" must be true or false, got "yes"/);
+});
+
 test('loadPlan: selects by filter and grep across files, in file order, repeating with --repeat-each', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-plan-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

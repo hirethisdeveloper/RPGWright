@@ -159,6 +159,8 @@ export interface Config extends UseOptions {
   reporter?: ReporterName | Array<ReporterName | [ReporterName, { outputFile?: string }]>;
   viewports?: Array<{ name?: string; cols: number; rows: number }>;
   trace?: 'off' | 'on' | 'retain-on-failure';
+  /** Write a `.run.json` per test (for `rpgwright play`), like `--save-run`. */
+  saveRun?: boolean;
   outputDir?: string;
   retries?: number;
   workers?: number;

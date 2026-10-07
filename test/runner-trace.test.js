@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createVirtualTerminal } = require('../src/terminal');
-const { shouldWriteTrace, slugify, tracePath, buildTraceHtml, buildCast, writeTrace } = require('../runner/trace');
+const { shouldWriteTrace, slugify, artifactPath, tracePath, buildTraceHtml, buildCast, writeTrace } = require('../runner/trace');
 
 async function fakeTrace() {
   const term = createVirtualTerminal({ cols: 10, rows: 2 });
@@ -37,6 +37,8 @@ test('slugify / tracePath: a stable, filesystem-safe name per file and test', ()
   assert.equal(slugify('Menu > opens Settings [80x24]'), 'menu-opens-settings-80x24');
   assert.equal(slugify('!!!'), 'test');
   assert.equal(tracePath('/out', '/x/menu.rpg.test.js', 'opens'), path.join('/out', 'menu-rpg-test--opens.trace.html'));
+  // Every per-test file shares the naming, differing only in extension.
+  assert.equal(artifactPath('/out', '/x/menu.rpg.test.js', 'opens', {}, '.run.json'), path.join('/out', 'menu-rpg-test--opens.run.json'));
 });
 
 test('tracePath: names stay unique within a run: the path under testDir, .ts stripped, and numbered collisions', () => {

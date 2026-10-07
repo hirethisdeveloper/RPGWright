@@ -168,4 +168,13 @@ function renderScreenAnsi(grid, cursor = null) {
   });
 }
 
-module.exports = { renderScreenFragment, renderScreenHtml, renderScreenAnsi, paletteColor, escapeHtml, SCREEN_CSS };
+// CSI and OSC escape sequences, as text carrying them (a colored error
+// message, ANSI rows like renderScreenAnsi's) would contain.
+const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+// `text` with its escape sequences removed: what it reads as, unstyled.
+function stripAnsi(text) {
+  return text.replace(ANSI_PATTERN, '');
+}
+
+module.exports = { renderScreenFragment, renderScreenHtml, renderScreenAnsi, stripAnsi, paletteColor, escapeHtml, SCREEN_CSS };

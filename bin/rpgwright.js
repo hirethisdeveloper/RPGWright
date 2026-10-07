@@ -6,6 +6,8 @@ const USAGE = `Usage: rpgwright <command> [options]
 Commands:
   init                     Scaffold rpgwright.config.js and an example test in the current directory
   test [options] [filter...]   Run the test suite
+  play <file.run.json> [--session <n>]
+                           Replay a run saved with --save-run in the terminal (never re-runs the app)
 
 Test options:
   --config <path>          Use this config file instead of ./rpgwright.config.js
@@ -22,6 +24,10 @@ Test options:
   --workers <n>            Run up to n test files at once
   --watch                  Rerun when files change
   --ui                     Show each test's live screen full-screen while running
+  --save-run               Save each test's run to <outputDir>/*.run.json, for "rpgwright play"
+
+Play options:
+  --session <n>            Which launched process to replay, 1-based (default 1)
 
 Filters: a path substring selects matching test files; "file:line" selects
 the test (or describe block) declared on that line.
@@ -40,6 +46,12 @@ async function main() {
     }
     const { runCli } = require('../runner/run');
     await runCli(rest);
+    return;
+  }
+
+  if (command === 'play') {
+    const { runPlay } = require('../runner/play');
+    await runPlay(rest);
     return;
   }
 

@@ -22,15 +22,20 @@ function slugify(text) {
 // The file part is the test file's path under testDir (so same-named files
 // in different directories differ). Slugs are lossy and capped, so two
 // tests can still map to one name (a retry's "(retry n)" cut off a long
-// title, say); `taken`, one per run, numbers the later ones instead of
-// letting them overwrite each other.
-function tracePath(outputDir, file, testName, { testDir, taken } = {}) {
+// title, say); `taken`, one per run and per kind of file, numbers the
+// later ones instead of letting them overwrite each other. Every per-test
+// file (trace, run file) is named this way, differing only in `extension`.
+function artifactPath(outputDir, file, testName, { testDir, taken } = {}, extension) {
   const relative = testDir ? path.relative(testDir, file) : path.basename(file);
   const base = `${slugify(relative.replace(/\.[jt]s$/, ''))}--${slugify(testName)}`;
   let name = base;
   for (let n = 2; taken && taken.has(name); n += 1) name = `${base}-${n}`;
   if (taken) taken.add(name);
-  return path.join(outputDir, `${name}.trace.html`);
+  return path.join(outputDir, `${name}${extension}`);
+}
+
+function tracePath(outputDir, file, testName, naming) {
+  return artifactPath(outputDir, file, testName, naming, '.trace.html');
 }
 
 function actionLabel(action) {
@@ -124,4 +129,4 @@ function writeTrace(outputDir, details, naming) {
   return { trace: target, cast };
 }
 
-module.exports = { shouldWriteTrace, slugify, tracePath, buildTraceHtml, buildCast, writeTrace };
+module.exports = { shouldWriteTrace, slugify, artifactPath, tracePath, buildTraceHtml, buildCast, writeTrace };
