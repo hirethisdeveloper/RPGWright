@@ -215,21 +215,28 @@ The file holds everything needed to watch the test again: the test's name, file 
 ```bash
 npx rpgwright play test-results/menu--opens-the-settings.run.json
 npx rpgwright play test-results/menu--two-apps.run.json --session 2
+npx rpgwright play test-results/menu--opens-the-settings.run.json --speed 0.5
 ```
 
-`rpgwright play` replays a saved run full-screen, in the same view as `--ui`, at the speed it was recorded. It doesn't run anything: your app isn't launched and no test code is loaded, so you can replay a run from CI on your own machine, without the app or its setup.
+`rpgwright play` replays a saved run full-screen, in the same view as `--ui`, at the speed it was recorded (or faster or slower, with `--speed` or the speed keys). It doesn't run anything: your app isn't launched and no test code is loaded, so you can replay a run from CI on your own machine, without the app or its setup.
 
-- **Header:** `REPLAY`, the test's file, line and name, its original result (`recorded ✖ failed in 2.3s`), and the playback position (`▶ 1.2s / 4.0s`).
+- **Header:** `REPLAY`, the test's file, line and name, its original result (`recorded ✖ failed in 2.3s`), the playback position (`▶ 1.2s / 4.0s`), the playback speed (`1.5×`), and `⏸ PAUSED` while paused.
 - **The app's screen** as it was at that moment, in a box at the app's size; it changes size when the app's terminal was resized.
 - **Footer:** the `test.step` the test was in and its last action at that moment. When playback ends, it says `Playback finished`, with what the failure expected and the last action if the test failed. The screen stays up until you quit.
 
 | Key | Does |
 | --- | --- |
+| `+`, `=` or `]` | Play faster: the next speed up, to at most `2×` |
+| `-`, `_` or `[` | Play slower: the next speed down, to at least `0.25×` |
+| `space` | Pause, or resume from where it paused |
 | `q` | Quit |
 | `Ctrl+C` | Quit |
+
+The speeds are `0.25×`, `0.5×`, `1×`, `1.5×` and `2×`. Changing speed carries on from the current moment; it doesn't skip ahead or back. Once playback has finished, the speed keys and `space` do nothing.
 
 | Option | Effect |
 |---|---|
 | `--session <n>` | Which of the test's processes to replay, counting from `1` in launch order (default `1`). The header shows `session n/m` when the run has more than one. |
+| `--speed <n>` | The speed to start at: `0.25`, `0.5`, `1`, `1.5` or `2` (default `1`). A trailing `x` is allowed (`--speed 0.5x`). |
 
-`rpgwright play` needs a terminal. It exits `1` with an error if stdin or stdout is piped or redirected, if the file is missing or isn't a run file (or was saved by a newer, incompatible RPGWright), or if `--session` is out of range. It exits `0` when you quit.
+`rpgwright play` needs a terminal. It exits `1` with an error if stdin or stdout is piped or redirected, if the file is missing or isn't a run file (or was saved by a newer, incompatible RPGWright), if `--session` is out of range, or if `--speed` isn't one of the speeds above. It exits `0` when you quit.

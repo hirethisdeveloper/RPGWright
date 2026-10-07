@@ -6,7 +6,7 @@ const USAGE = `Usage: rpgwright <command> [options]
 Commands:
   init                     Scaffold rpgwright.config.js and an example test in the current directory
   test [options] [filter...]   Run the test suite
-  play <file.run.json> [--session <n>]
+  play <file.run.json> [--session <n>] [--speed <n>]
                            Replay a run saved with --save-run in the terminal (never re-runs the app)
 
 Test options:
@@ -28,6 +28,7 @@ Test options:
 
 Play options:
   --session <n>            Which launched process to replay, 1-based (default 1)
+  --speed <n>              Playback speed: 0.25, 0.5, 1, 1.5 or 2 (default 1)
 
 Filters: a path substring selects matching test files; "file:line" selects
 the test (or describe block) declared on that line.

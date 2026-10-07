@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { spawnSync } = require('node:child_process');
-const { createPlayback, stepsAt, failureLines, parsePlayArgs, runPlay } = require('../runner/play');
+const { SPEEDS, createPlayback, stepsAt, failureLines, parsePlayArgs, runPlay } = require('../runner/play');
 const { LEAVE } = require('../runner/ui');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -220,14 +220,33 @@ test('failureLines: a GameDriver report shows what was expected after which acti
 // --- Arguments ---------------------------------------------------------------
 
 test('parsePlayArgs: a file and an optional 1-based --session', () => {
-  assert.deepEqual(parsePlayArgs(['a.run.json']), { file: 'a.run.json', session: 1 });
-  assert.deepEqual(parsePlayArgs(['--session', '2', 'a.run.json']), { file: 'a.run.json', session: 2 });
+  assert.deepEqual(parsePlayArgs(['a.run.json']), { file: 'a.run.json', session: 1, speed: 1 });
+  assert.deepEqual(parsePlayArgs(['--session', '2', 'a.run.json']), { file: 'a.run.json', session: 2, speed: 1 });
   assert.throws(() => parsePlayArgs([]), /Missing the run file to play\. Usage: rpgwright play/);
   assert.throws(() => parsePlayArgs(['a', 'b']), /Expected one run file/);
-  assert.throws(() => parsePlayArgs(['a', '--speed', '2']), /Unknown option "--speed"/);
+  assert.throws(() => parsePlayArgs(['a', '--fast']), /Unknown option "--fast"/);
   for (const bad of [[], ['0'], ['x'], ['1.5'], ['-1']]) {
     assert.throws(() => parsePlayArgs(['a', '--session', ...bad]), /--session requires a positive integer/, bad.join());
   }
+});
+
+test('parsePlayArgs: --speed takes one of the allowed speeds, in any plain spelling', () => {
+  assert.deepEqual(SPEEDS, [0.25, 0.5, 1, 1.5, 2]);
+  const forms = [
+    ['0.25', 0.25], ['.25', 0.25], ['0.25x', 0.25],
+    ['0.5', 0.5], ['.5', 0.5], ['0.5x', 0.5], ['0.50', 0.5],
+    ['1', 1], ['1.0', 1], ['1x', 1], ['1X', 1],
+    ['1.5', 1.5], ['1.5x', 1.5],
+    ['2', 2], ['2.0', 2], ['2x', 2],
+  ];
+  for (const [value, speed] of forms) {
+    assert.deepEqual(parsePlayArgs(['a', '--speed', value]), { file: 'a', session: 1, speed }, value);
+  }
+  assert.equal(parsePlayArgs(['--speed', '2', 'a', '--session', '3']).speed, 2);
+  for (const bad of ['0', '3', '0.75', 'fast', '', 'x', '-1', '2xx', '1e0']) {
+    assert.throws(() => parsePlayArgs(['a', '--speed', bad]), /--speed must be one of 0\.25, 0\.5, 1, 1\.5, 2 \(got ".*"\)\./, bad);
+  }
+  assert.throws(() => parsePlayArgs(['a', '--speed']), /--speed requires a value: one of 0\.25, 0\.5, 1, 1\.5, 2\./);
 });
 
 // --- runPlay against fakes ---------------------------------------------------
@@ -367,6 +386,140 @@ test('runPlay: a session past the end, no sessions, or no terminal fail before t
   assert.equal(notTty.stdout.chunks.length, 0);
 });
 
+// A two-frame run: "first" at once, "second" one recorded second later.
+function twoFrameRun() {
+  const run = runFile();
+  run.sessions[0].events = [
+    [0, 'o', 'first'],
+    [1, 'o', '\r\nsecond'],
+  ];
+  run.sessions[0].actions = [];
+  return run;
+}
+
+const press = async (stdin, keys) => {
+  stdin.emit('data', Buffer.from(keys));
+  await wait();
+};
+
+test('runPlay: --speed sets how long the recording takes in wall time, shown in the header', async () => {
+  for (const speed of SPEEDS) {
+    const wallMs = 1000 / speed;
+    const { stdout, stdin, clock, done } = play(twoFrameRun(), ['x.run.json', '--speed', String(speed)]);
+    await wait();
+    assert.match(stdout.frame(), new RegExp(`▶ 0\\.0s / 1\\.0s {3}${String(speed).replace('.', '\\.')}×`));
+    clock.advance(wallMs - 1);
+    await wait();
+    assert.doesNotMatch(stdout.frame(), /second/, `speed ${speed}: not yet at ${wallMs - 1}ms`);
+    clock.advance(1);
+    await wait();
+    assert.match(stdout.frame(), /│second/, `speed ${speed}: shown at ${wallMs}ms`);
+    assert.match(stdout.frame(), /Playback finished/);
+    await press(stdin, 'q');
+    await done;
+  }
+});
+
+test('runPlay: speed keys change speed mid-playback from the current position, re-aiming the next event', async () => {
+  const { stdout, stdin, clock, done } = play(twoFrameRun());
+  await wait();
+  assert.match(stdout.frame(), /▶ 0\.0s \/ 1\.0s {3}1×/);
+  assert.match(stdout.frame(), /space pause {2}-\/\+ speed {2}q quit/);
+  clock.advance(400);
+  await press(stdin, '+');
+  assert.match(stdout.frame(), /▶ 0\.4s \/ 1\.0s {3}1\.5×/, 'no jump in position');
+  await press(stdin, ']');
+  assert.match(stdout.frame(), /▶ 0\.4s \/ 1\.0s {3}2×/);
+  assert.deepEqual(clock.timers.map((t) => t.at), [700], 'one timer, re-aimed for 2×: the remaining 0.6s takes 300ms');
+  clock.advance(299);
+  await wait();
+  assert.doesNotMatch(stdout.frame(), /second/);
+  clock.advance(1);
+  await wait();
+  assert.match(stdout.frame(), /│second/);
+  await press(stdin, 'q');
+  await done;
+
+  // And slower: '-' at 0.5s from 1× to 0.5×, so the remaining 0.5s takes 1s.
+  const slow = play(twoFrameRun());
+  await wait();
+  slow.clock.advance(500);
+  await press(slow.stdin, '-');
+  assert.match(slow.stdout.frame(), /▶ 0\.5s \/ 1\.0s {3}0\.5×/);
+  slow.clock.advance(999);
+  await wait();
+  assert.doesNotMatch(slow.stdout.frame(), /second/);
+  slow.clock.advance(1);
+  await wait();
+  assert.match(slow.stdout.frame(), /│second/);
+  await press(slow.stdin, 'q');
+  await slow.done;
+});
+
+test('runPlay: space pauses with the position frozen, and resuming carries on from it', async () => {
+  const { stdout, stdin, clock, done } = play(twoFrameRun());
+  await wait();
+  assert.doesNotMatch(stdout.frame(), /PAUSED/);
+  clock.advance(300);
+  await press(stdin, ' ');
+  let frame = stdout.frame();
+  assert.match(frame, /▶ 0\.3s \/ 1\.0s {3}1× {3}⏸ PAUSED/);
+  assert.match(frame, /space resume {2}-\/\+ speed {2}q quit/);
+  assert.equal(clock.timers.length, 0, 'nothing scheduled while paused');
+  clock.advance(5000);
+  await wait();
+  frame = stdout.frame();
+  assert.match(frame, /▶ 0\.3s \/ 1\.0s/, 'position frozen');
+  assert.doesNotMatch(frame, /second/);
+  await press(stdin, '=');
+  assert.match(stdout.frame(), /1\.5× {3}⏸ PAUSED/, 'speed changes while paused, still paused');
+  await press(stdin, '_');
+  await press(stdin, ' ');
+  frame = stdout.frame();
+  assert.doesNotMatch(frame, /PAUSED/);
+  assert.match(frame, /▶ 0\.3s \/ 1\.0s {3}1×/);
+  clock.advance(699);
+  await wait();
+  assert.doesNotMatch(stdout.frame(), /second/);
+  clock.advance(1);
+  await wait();
+  assert.match(stdout.frame(), /│second/);
+  await press(stdin, 'q');
+  await done;
+});
+
+test('runPlay: the speed keys stop at the slowest and fastest speeds', async () => {
+  const { stdout, stdin, done } = play(twoFrameRun(), ['x.run.json', '--speed', '0.5']);
+  await wait();
+  for (const key of ['-', '_', '[', '-']) await press(stdin, key);
+  assert.match(stdout.frame(), / 0\.25×/);
+  for (const [key, speed] of [['+', '0\\.5'], ['=', '1'], [']', '1\\.5'], ['+', '2'], ['+', '2'], [']', '2']]) {
+    await press(stdin, key);
+    assert.match(stdout.frame(), new RegExp(` ${speed}×`), key);
+  }
+  await press(stdin, 'q');
+  await done;
+});
+
+test('runPlay: speed and pause keys are ignored once playback has finished', async () => {
+  const { stdout, stdin, clock, done } = play(twoFrameRun());
+  await wait();
+  clock.advance(1000);
+  await wait();
+  let frame = stdout.frame();
+  assert.match(frame, /Playback finished/);
+  assert.match(frame, /■ 1\.0s \/ 1\.0s {3}1×/);
+  assert.doesNotMatch(frame, /space pause/);
+  for (const key of [' ', '+', ']', '-', '[']) await press(stdin, key);
+  frame = stdout.frame();
+  assert.match(frame, /■ 1\.0s \/ 1\.0s {3}1×/);
+  assert.doesNotMatch(frame, /PAUSED/);
+  assert.match(frame, /Playback finished/);
+  assert.equal(clock.timers.length, 0);
+  await press(stdin, 'q');
+  await done;
+});
+
 // --- CLI ---------------------------------------------------------------------
 
 function runCli(args, options = {}) {
@@ -383,7 +536,7 @@ function writeRun(dir, run, name = 'demo.run.json') {
   return file;
 }
 
-test('rpgwright play: clear errors, exit 1 and no stack for a bad file, a bad --session or no terminal', () => {
+test('rpgwright play: clear errors, exit 1 and no stack for a bad file, a bad --session or --speed, or no terminal', () => {
   const dir = tempDir('rpgwright-play-cli-');
   try {
     const good = writeRun(dir, runFile());
@@ -394,6 +547,8 @@ test('rpgwright play: clear errors, exit 1 and no stack for a bad file, a bad --
       [['play', writeRun(dir, { format: 'something-else' }, 'other.run.json')], /is not an RPGWright run file/],
       [['play', good, '--session', '0'], /--session requires a positive integer/],
       [['play', good, '--session', '2'], /has only 1 session/],
+      [['play', good, '--speed', '3'], /--speed must be one of 0\.25, 0\.5, 1, 1\.5, 2 \(got "3"\)/],
+      [['play', good, '--speed'], /--speed requires a value/],
       [['play', good], /rpgwright play needs an interactive terminal/],
     ];
     for (const [args, pattern] of cases) {
@@ -428,6 +583,34 @@ test('rpgwright play: replays a run file full-screen, finishes, and q exits 0 le
     await ui.expectExit({ code: 0 });
     await ui.expectTerminal('toBeInAltScreen', [], { not: true });
     await ui.expectCursorVisible(true);
+  } finally {
+    await ui.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('rpgwright play: --speed 2 plays faster, and space pauses and resumes in a real terminal', async () => {
+  const dir = tempDir('rpgwright-play-speed-');
+  const run = runFile();
+  run.sessions[0].events = [
+    [0, 'o', 'first'],
+    [6, 'o', '\r\nsecond'],
+  ];
+  const file = writeRun(dir, run);
+  const ui = await launchPlay([file, '--speed', '2']);
+  try {
+    await ui.expectText('first');
+    await ui.expectText('2×');
+    await ui.press('space');
+    await ui.expectText('⏸ PAUSED');
+    await ui.expectText('space resume');
+    await ui.press('space');
+    await ui.expectNotText('PAUSED');
+    await ui.expectText('second');
+    await ui.expectText('Playback finished');
+    await ui.press('q');
+    await ui.expectExit({ code: 0 });
+    await ui.expectTerminal('toBeInAltScreen', [], { not: true });
   } finally {
     await ui.stop();
     fs.rmSync(dir, { recursive: true, force: true });

@@ -3,7 +3,11 @@
 const { createVirtualTerminal } = require('../src/terminal');
 const { createFullscreen, screenLines, titleBar, infoBar, statusBar, errorLine, actionText, fit, seconds, STATUS_GLYPH } = require('./ui');
 
-const USAGE = 'Usage: rpgwright play <file.run.json> [--session <n>]';
+const USAGE = 'Usage: rpgwright play <file.run.json> [--session <n>] [--speed <n>]';
+// The playback speeds, slowest first: --speed picks one, the speed keys step
+// through them.
+const SPEEDS = [0.25, 0.5, 1, 1.5, 2];
+const SPEED_KEYS = { '+': 1, '=': 1, ']': 1, '-': -1, '_': -1, '[': -1 };
 const REAL_CLOCK = {
   now: () => Date.now(),
   setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -160,9 +164,20 @@ function failureLines(error) {
   return lines.map((line) => line.trim()).filter(Boolean).slice(0, ERROR_LINES);
 }
 
+// A --speed value ("1.5", ".25", "1.0", "0.5x") as one of SPEEDS.
+function parseSpeed(value) {
+  const allowed = `one of ${SPEEDS.join(', ')}`;
+  if (value === undefined) throw new Error(`--speed requires a value: ${allowed}.`);
+  const match = /^(\d+\.?\d*|\.\d+)x?$/i.exec(value);
+  const speed = match ? Number(match[1]) : NaN;
+  if (!SPEEDS.includes(speed)) throw new Error(`--speed must be ${allowed} (got "${value}").`);
+  return speed;
+}
+
 function parsePlayArgs(args) {
   let file = null;
   let session = 1;
+  let speed = 1;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === '--session') {
@@ -170,6 +185,9 @@ function parsePlayArgs(args) {
       const n = Number(value);
       if (value === undefined || !/^\d+$/.test(value) || n < 1) throw new Error('--session requires a positive integer (1 is the first session).');
       session = n;
+      i += 1;
+    } else if (arg === '--speed') {
+      speed = parseSpeed(args[i + 1]);
       i += 1;
     } else if (arg.startsWith('--')) {
       throw new Error(`Unknown option "${arg}". ${USAGE}`);
@@ -180,14 +198,16 @@ function parsePlayArgs(args) {
     }
   }
   if (file === null) throw new Error(`Missing the run file to play. ${USAGE}`);
-  return { file, session };
+  return { file, session, speed };
 }
 
 /**
  * `rpgwright play`: replays one session of a saved run in the full-screen
  * UI. Only the recorded output is replayed into a fresh virtual terminal;
- * nothing is launched and no test code is loaded. Resolves when the user
- * quits (q or Ctrl+C), whether or not playback has finished.
+ * nothing is launched and no test code is loaded. Until playback finishes,
+ * space pauses and resumes and the SPEED_KEYS step through SPEEDS (clamped
+ * at either end). Resolves when the user quits (q or Ctrl+C), whether or
+ * not playback has finished.
  *
  * `stdout`, `stdin`, `proc`, `console`, `clock` and `readRunFile` are
  * injectable for tests.
@@ -234,6 +254,7 @@ async function runPlay(args, options = {}) {
   const playback = createPlayback({
     events: timeline,
     clock,
+    speed: opts.speed,
     apply([, type, data]) {
       if (type === 'o') {
         enqueue(() => terminal.write(data));
@@ -257,8 +278,9 @@ async function runPlay(args, options = {}) {
   function headerLines(width) {
     const outcome = `recorded ${STATUS_GLYPH[result.status] || ''} ${result.status}${typeof result.durationMs === 'number' ? ` in ${seconds(result.durationMs)}` : ''}`;
     const sessionText = total > 1 ? `   session ${opts.session}/${total}` : '';
-    const clockText = `${finished ? '■' : '▶'} ${seconds(playback.position * 1000)} / ${seconds(playback.duration * 1000)}`;
-    return [titleBar(`RPGWright  REPLAY  ${where}`, width), infoBar(`${outcome}${sessionText}   ${clockText}`, width)];
+    const clockText = `${finished ? '■' : '▶'} ${seconds(playback.position * 1000)} / ${seconds(playback.duration * 1000)}   ${playback.speed}×`;
+    const paused = isPaused() ? '   ⏸ PAUSED' : '';
+    return [titleBar(`RPGWright  REPLAY  ${where}`, width), infoBar(`${outcome}${sessionText}   ${clockText}${paused}`, width)];
   }
 
   function footerLines(width) {
@@ -270,8 +292,28 @@ async function runPlay(args, options = {}) {
       lines.push(statusBar(result.status, result.status.toUpperCase(), 'Playback finished', width));
       for (const line of failureLines(result.error)) lines.push(errorLine(line, width));
     }
-    lines.push(infoBar('q quit', width));
+    lines.push(infoBar(playback.done ? 'q quit' : `space ${isPaused() ? 'resume' : 'pause'}  -/+ speed  q quit`, width));
     return lines;
+  }
+
+  // Started and not yet finished, but not playing.
+  function isPaused() {
+    return !playback.playing && !playback.done;
+  }
+
+  // Speed and pause keys; ignored once playback has finished.
+  function onPlaybackKey(key) {
+    if (playback.done) return;
+    if (key === 'space') {
+      if (playback.playing) playback.pause();
+      else playback.resume();
+    } else if (Object.hasOwn(SPEED_KEYS, key)) {
+      const index = SPEEDS.indexOf(playback.speed) + SPEED_KEYS[key];
+      playback.setSpeed(SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, index))]);
+    } else {
+      return;
+    }
+    display.schedule();
   }
 
   const display = createFullscreen({
@@ -290,6 +332,7 @@ async function runPlay(args, options = {}) {
       }),
     onKey(key) {
       if (key === 'q' || key === 'ctrl+c') display.close();
+      else onPlaybackKey(key);
     },
     onClose() {
       playback.stop();
@@ -309,4 +352,4 @@ async function runPlay(args, options = {}) {
   }
 }
 
-module.exports = { createPlayback, stepsAt, failureLines, parsePlayArgs, runPlay };
+module.exports = { SPEEDS, createPlayback, stepsAt, failureLines, parsePlayArgs, runPlay };
