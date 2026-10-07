@@ -293,8 +293,9 @@ function resolveTarget(grid, target) {
  * own: every read resolves it against the screen as it is right then, which
  * is what lets assertions on it wait for redraws.
  *
- * `source` supplies the grid (`getScreenCells`) and is carried through so
- * runner/expect.js can reach the owning GameDriver.
+ * `source` supplies the grid (`getScreenCells`) and, optionally, `extend(
+ * locator, { center })`, which returns extra members for every locator
+ * created here (including the ones `.first()`, `.locator()` etc. derive).
  */
 function createLocator(source, target, { nth = null, within = null } = {}) {
   function resolveAll(grid = source.getScreenCells()) {
@@ -310,7 +311,7 @@ function createLocator(source, target, { nth = null, within = null } = {}) {
   }
 
   // The single rect this locator matches, or an explanation of why it
-  // doesn't match exactly one (locators are strict, like Playwright's).
+  // doesn't match exactly one (locators are strict).
   function resolveOne(grid) {
     const rects = resolveAll(grid);
     if (rects.length === 1) return { rect: rects[0] };
@@ -358,14 +359,6 @@ function createLocator(source, target, { nth = null, within = null } = {}) {
       const rect = strictRect();
       return rect ? textIn(source.getScreenCells(), rect) : null;
     },
-    click(opts) {
-      const { x, y } = center();
-      return source.driver.mouse.click(x, y, opts);
-    },
-    hover(opts) {
-      const { x, y } = center();
-      return source.driver.mouse.move(x, y, opts);
-    },
     cells() {
       const rect = strictRect();
       if (!rect) return null;
@@ -375,7 +368,10 @@ function createLocator(source, target, { nth = null, within = null } = {}) {
         .map((row) => row.slice(rect.x, right(rect)));
     },
   };
-  return locator;
+  // Whatever the owner of the screen adds to every locator it creates
+  // (GameDriver adds the mouse actions and a reference back to itself);
+  // this module stays geometry only.
+  return source.extend ? Object.assign(locator, source.extend(locator, { center })) : locator;
 }
 
 // ---------------------------------------------------------------- style --

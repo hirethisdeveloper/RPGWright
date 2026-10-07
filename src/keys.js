@@ -85,7 +85,7 @@ function unrepresentableError(key) {
 }
 
 /**
- * Resolves a key name or a Playwright-style chord ("Control+ArrowLeft",
+ * Resolves a key name or a modifier chord ("Control+ArrowLeft",
  * "Shift+Tab", "Alt+x", "Control+c") to the bytes a real xterm would send.
  * Exact entries in `table` always win, so the `keys` override and the legacy
  * names (CTRL_C, ARROWUP, ...) keep working unchanged. Key and modifier names

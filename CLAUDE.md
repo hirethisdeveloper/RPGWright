@@ -4,7 +4,7 @@ Agent-facing gateway to this repo. Read this first; it's deliberately short. For
 
 ## What RPGWright is
 
-A Playwright-like end-to-end testing framework for terminal applications that depend on real TTY behavior (raw input mode, ANSI escapes, alt-screen buffer, cursor positioning). It launches a target CLI inside a real pseudo-terminal (`node-pty`), drives it with real keystrokes, and asserts against the terminal's actual interpreted screen contents (`@xterm/headless`). Full design rationale: [`RPGWright.md`](./RPGWright.md) at the repo's parent directory context — see that file for the complete spec this build follows.
+An end-to-end testing framework for terminal applications that depend on real TTY behavior (raw input mode, ANSI escapes, alt-screen buffer, cursor positioning). It launches a target CLI inside a real pseudo-terminal (`node-pty`), drives it with real keystrokes, and asserts against the terminal's actual interpreted screen contents (`@xterm/headless`). Full design rationale: [`RPGWright.md`](./RPGWright.md) at the repo's parent directory context — see that file for the complete spec this build follows.
 
 ## Architecture
 
@@ -15,12 +15,12 @@ CLI (`rpgwright` bin: init / test subcommands)
 Test runner (rpgwright/test — test(), expect(), fixtures, reporter)
    │
    ▼
-GameDriver  (game.js — public Playwright-like API)
+GameDriver  (game.js — public API)
    │
    ├── press(key) / type(text)          → pty.js: write bytes
    ├── expectText/expectNotText/...      → assertions.js: waitUntil()
    ├── resize(cols, rows)                → pty.js + terminal.js
-   └── stop()                            → pty.js: signal + escalate
+   └── stop()                            → stopProcess(): signal + escalate via pty.js
           │
           ▼
       terminal.js  (ANSI/VT100 interpretation via @xterm/headless)
@@ -38,7 +38,7 @@ GameDriver  (game.js — public Playwright-like API)
 - `src/pty.js` — owns the raw OS process via node-pty; spawn/write/resize/kill primitives, no app knowledge, no signal policy.
 - `src/terminal.js` — wraps `@xterm/headless`; re-derives the currently visible screen from live buffer state on every read.
 - `src/assertions.js` — four wait primitives (`waitUntil`, `waitUntilAbsent`, `waitForQuiet`, `pollUntil`, all event/poll-driven, never a raw setInterval-as-sync-mechanism) and `formatFailureReport()` (the §9 failure block).
-- `src/keys.js` — named key → raw byte sequence table (`KEY_SEQUENCES`), extendable via `launchGame`'s `keys` option, plus `resolveKey()` for Playwright-style chords (`Control+ArrowLeft`) and `encodeMouse()` for mouse reports in each encoding.
+- `src/keys.js` — named key → raw byte sequence table (`KEY_SEQUENCES`), extendable via `launchGame`'s `keys` option, plus `resolveKey()` for modifier chords (`Control+ArrowLeft`) and `encodeMouse()` for mouse reports in each encoding.
 - `src/layout.js` — pure screen geometry over the cell grid: text and box-drawing detection, strict lazy locators (`createLocator`), and the layout/style checks (`CHECKS`/`evaluateCheck`) that `GameDriver.expectLayout` waits on.
 - `src/render.js` — pure cell-grid → HTML rendering (xterm default palette, inverse, wide characters, cursor), used by `game.renderHtml()` and traces.
 - `src/game.js` — `GameDriver`/`launchGame()`, the full public API: `press`/`press.raw`, `type`, `expectText`, `expectNotText`, `expectScreen`, `expectState`, `waitForStable`, `step`, `locator`/`expectLayout`/`expectCount`/`expectFocusGroup`/`getFocused`, `expectCursorAt`/`expectCursorVisible`/`getCursor`, `expectSeen`/`expectNoFlicker` (over a bounded frame history), `expectTerminal` (modes, title, bell, hyperlinks, clipboard, scrollback), `paste`/`mouse`, `kill`/`waitForExit`/`expectExit`, `resize`, `stop`, plus `getScreenText`/`renderHtml`/`getTrace`/`actions`; also forwards terminal query replies and applies `term`/`colorDepth`/`locale`.
@@ -48,7 +48,7 @@ GameDriver  (game.js — public Playwright-like API)
 - `runner/config.js` — `rpgwright.config.js` loader + validation; validates and defaults the runner-level fields (`testDir`, `testMatch`, `timeout`, `reporter`, `viewports`, `trace`, `retries`, `workers`, `services`, `globalSetup`/`globalTeardown`, `outputDir`); launchGame-specific fields pass through untouched.
 - `runner/discover.js` — hand-rolled glob-to-RegExp test-file discovery (no external glob dependency).
 - `runner/test.js` — the authoring API (`test`/`describe` and their `skip`/`only`/`fixme`/`fail` variants, hooks, `test.use`, `test.setTimeout`/`slow`/`step`/`info`) and its per-file scope tree (`_beginFile`/`_collect`/`_scopeChain`), re-exported with `expect` as `rpgwright/test`.
-- `runner/fixtures.js` — lazy, Playwright-style fixtures: reading destructured fixture names, and the per-test scope that creates/tears down built-ins (`game`, `viewport`, `launch`, `tmpHome`, `testInfo`) and `test.extend` fixtures.
+- `runner/fixtures.js` — lazy fixtures: reading destructured fixture names, and the per-test scope that creates/tears down built-ins (`game`, `viewport`, `launch`, `tmpHome`, `testInfo`) and `test.extend` fixtures.
 - `runner/expect.js` — `expect(game).toX()` and `expect(locator).toX()` sugar, delegating straight to `GameDriver`'s `expect*` methods.
 - `runner/trace.js` — per-test HTML trace files (`trace: on | retain-on-failure`) and asciinema `.cast` recordings, built from `game.getTrace()`.
 - `runner/services.js` — background `services` (ready by output text or port) and `globalSetup`/`globalTeardown` around a run.
@@ -77,4 +77,4 @@ GameDriver  (game.js — public Playwright-like API)
 
 ## `docs/` (consumer-facing, complete)
 
-`docs/` is the Playwright-style usage guide for people using RPGWright in their own project — a different audience from `agent_docs/` above (see `RPGWright.md` §12 for the split). The nine pages required for the v1.0 exit gate (`intro.md`, `writing-tests.md`, `configuration.md`, `cli.md`, `assertions.md`, `key-sequences.md`, `diagnostics.md`, `best-practices.md`, `ci.md`) plus `layout-and-focus.md`. Never link from a `docs/` page into `agent_docs/` or vice versa — they're for different readers.
+`docs/` is the usage guide for people using RPGWright in their own project — a different audience from `agent_docs/` above (see `RPGWright.md` §12 for the split). The nine pages required for the v1.0 exit gate (`intro.md`, `writing-tests.md`, `configuration.md`, `cli.md`, `assertions.md`, `key-sequences.md`, `diagnostics.md`, `best-practices.md`, `ci.md`) plus `layout-and-focus.md`. Never link from a `docs/` page into `agent_docs/` or vice versa — they're for different readers.

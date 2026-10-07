@@ -2,7 +2,7 @@
 
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { expect } = require('./expect');
-const { validateTimeout } = require('./config');
+const { validateTimeout, normalizeViewports } = require('./config');
 
 // Set by run.js before require()-ing each test file, and read back after —
 // registration (this module) and execution (run.js) are deliberately
@@ -158,12 +158,13 @@ function createTestApi(fixtureDefs) {
    */
   api.eachViewport = function eachViewport(...args) {
     assertInSuite('test.eachViewport');
-    const [viewports, name, fn] = Array.isArray(args[0]) ? args : [configViewports, ...args];
-    if (!viewports || viewports.length === 0) {
+    const [list, name, fn] = Array.isArray(args[0]) ? args : [configViewports, ...args];
+    if (!list || list.length === 0) {
       throw new Error(`test.eachViewport("${name}") needs viewports: set "viewports" in rpgwright.config.js or pass a list as the first argument.`);
     }
-    for (const vp of viewports) {
-      const viewport = { name: vp.name || `${vp.cols}x${vp.rows}`, cols: vp.cols, rows: vp.rows };
+    // The config's list is already validated; one passed here is checked the same way.
+    const viewports = list === configViewports ? list : normalizeViewports(list, `test.eachViewport("${name}")`);
+    for (const viewport of viewports) {
       reg(`${name} [${viewport.name}]`, fn, { use: { cols: viewport.cols, rows: viewport.rows }, viewport });
     }
   };
@@ -265,7 +266,7 @@ describe.only = function describeOnly(name, fn) {
   describeWith('only', name, fn);
 };
 
-// Playwright spells it test.describe; both forms work.
+// test.describe is an alias; both forms work.
 shared.describe = describe;
 
 const test = createTestApi({});

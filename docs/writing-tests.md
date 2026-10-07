@@ -55,7 +55,7 @@ describe('settings screen', () => {
 });
 ```
 
-`describe` groups related tests and labels them in output (`settings screen > toggles sound`). It also scopes hooks and `test.use()` options to the tests inside it. `test.describe` is the same function, for those used to Playwright's spelling.
+`describe` groups related tests and labels them in output (`settings screen > toggles sound`). It also scopes hooks and `test.use()` options to the tests inside it. `test.describe` is the same function, as an alternate spelling.
 
 ## Setup and teardown: hooks
 
@@ -219,7 +219,7 @@ test('shows the inbox', async ({ game, loggedIn }) => {
 
 A fixture is created once per test, the first time the test or one of its hooks asks for it, after the fixtures it depends on. Cleanup runs after the test and its `afterEach` hooks, in reverse order of setup. A plain value works as a fixture too: `base.extend({ apiUrl: 'http://localhost:4000' })`. Built-in fixture names can't be redefined.
 
-RPGWright reads which fixtures a function wants from how it's written (`async ({ game, server }) => …`), as Playwright does. If a test or hook takes its fixtures without destructuring (`async (fixtures) => …`), every fixture is set up except `tmpHome`, which changes the game's `HOME` and so is only set up when a test names it. A fixture definition must destructure the fixtures it depends on; one that doesn't gets none.
+RPGWright reads which fixtures a function wants from how it's written (`async ({ game, server }) => …`). If a test or hook takes its fixtures without destructuring (`async (fixtures) => …`), every fixture is set up except `tmpHome`, which changes the game's `HOME` and so is only set up when a test names it. A fixture definition must destructure the fixtures it depends on; one that doesn't gets none.
 
 ## Retries and repeated runs
 

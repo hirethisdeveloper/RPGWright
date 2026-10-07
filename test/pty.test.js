@@ -124,3 +124,15 @@ test('spawnPipe: a command that cannot be started keeps the reason', async () =>
   const missing = spawnPipe({ command: '/nonexistent/command' });
   assert.match((await missing.waitForExit()).error, /ENOENT/);
 });
+
+test('stopProcess: SIGTERM when the process cooperates, SIGKILL after the timeout when it ignores it', { timeout: 15000 }, async () => {
+  const { stopProcess } = require('../src/game');
+  const polite = spawnPipe({ command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'] });
+  assert.deepEqual(await stopProcess(polite, { timeout: 5000 }), { exitCode: 0, signal: 15 });
+
+  const stubborn = spawnPipe({ command: process.execPath, args: ['-e', "process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)"] });
+  await new Promise((resolve) => stubborn.onData((chunk) => chunk.includes('ready') && resolve()));
+  const started = Date.now();
+  assert.deepEqual(await stopProcess(stubborn, { timeout: 300 }), { exitCode: 0, signal: 9 });
+  assert.ok(Date.now() - started >= 300, 'waited out the grace period before escalating');
+});

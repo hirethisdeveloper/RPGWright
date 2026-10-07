@@ -22,6 +22,11 @@ A locator doesn't capture the screen when you create it. Every assertion looks i
 
 **Boxes** are rectangles drawn with box-drawing characters: every Ink `borderStyle`, and the `┌─┐ │ └─┘` family generally, including ASCII `+-|`. Text drawn into the top border, as in `┌─ Inventory ─┐`, counts as part of the box. When boxes are nested, `{ box: { containing } }` lists the innermost one first.
 
+Two things make a box locator match more than one box, and the strictness rule below then asks you to pick one:
+
+- **Enclosing frames.** A box whose interior holds the text also counts every box around it. If a button's label sits inside a full-screen frame, `{ box: { containing: 'Quit' } }` matches both the button and the frame. Use `.first()` for the innermost, or `.last()` for the outermost.
+- **Dividers.** A junction character (`├ ┬ ┼ …`) counts as a corner, so a panel split by a `├───┤` divider is found as each half *and* the whole panel. `{ box: { containing: 'INVENTORY' } }` on a panel with a title row above a divider matches all three; `.last()` is the whole panel.
+
 ### Narrowing a locator
 
 ```js
@@ -43,6 +48,15 @@ locator(box containing "Play") matched 2 regions ((x=0, y=1, 13×5), (x=15, y=1,
 
 When that happens, either pick one with `.first()`/`.nth(i)`, or choose text that's actually unique. The message above came from a real test: "Play" appeared in the menu box *and* in a side panel showing `Selected: Play`.
 
+The same label often appears in more than one place, such as a location name in both a header and a footer, or a menu item and a key-hint bar. Narrow the search to the part of the screen you mean by chaining locators:
+
+```js
+const header = game.locator({ row: 0 });
+await expect(header.locator('Spawn Point')).toBeAligned('center');
+```
+
+An explicit rectangle also works as the outer locator, but it only holds for one terminal size.
+
 ### Reading a locator
 
 These read the screen once, without waiting:
@@ -52,7 +66,7 @@ These read the screen once, without waiting:
 | `count()` | how many regions match right now |
 | `boundingBox()` | `{ x, y, width, height }`, or `null` if nothing matches |
 | `textContent()` | the text inside the region, or `null` |
-| `cells()` | the region's cells with their styles (see [Focus and style](#focus-and-style)) |
+| `cells()` | the region's cells with their styles, as an array of rows, each an array of cells (see [Focus and style](#focus-and-style)) |
 
 `boundingBox()`, `textContent()` and `cells()` throw if the locator matches more than one region.
 
@@ -168,7 +182,7 @@ await expect(options).toHaveExactlyOneFocused();
 game.getFocused(options); // [{ x, y, width, height }] of the focused match(es), right now
 ```
 
-Check your focus indicator under `colorDepth: 'none'` too. Most color libraries drop *all* styling when color is off, inverse included, so a style-only indicator stops working there. A marker still works:
+Check your focus indicator under `colorDepth: 'none'` too. Most color libraries drop *all* styling when color is off, inverse included, so a style-only indicator stops working there: with no marker, nothing on screen shows which item is focused, and `toHaveExactlyOneFocused()` fails with no focused item. A marker still works:
 
 ```js
 describe('without color', () => {

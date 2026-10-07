@@ -38,7 +38,7 @@ function focusIndicators(opts = {}) {
 }
 
 function locatorMatchers(locator, negate) {
-  const { driver } = locator.source;
+  const { driver } = locator;
   const matchers = {};
   for (const [name, split] of Object.entries(LAYOUT_MATCHERS)) {
     matchers[name] = (...args) => {

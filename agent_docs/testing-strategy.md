@@ -34,6 +34,19 @@ It worked end to end on the first extended attempt — full character creation (
 
 Neither finding required a change to RPGWright's core — both were assumptions to correct in test-authoring guidance, which is itself a meaningful signal: the tool's actual mechanics (PTY handling, alt-screen/multi-panel terminal interpretation, event-driven waiting) held up against real, unplanned-for complexity without modification.
 
+### Phase 4 follow-up: layout and focus against Watcher in the Dark
+
+The first Phase 4 pass predates the layout, focus and resize assertions. A second pass wrote layout/focus specs in Watcher's `e2e/tests/` (`hudLayout.rpg.test.js`, `modeSelectFocus.rpg.test.js`): panel placement in the three-column gameplay HUD (left column, double-bordered map, right column), a centred title bar, the footer under the map, a mid-test `game.resize` and a 100×30 launch via `test.use`, and Tab/Shift+Tab focus cycling with `toHaveExactlyOneFocused`. All six passed on three consecutive runs, again with no change to RPGWright's core. Watcher's default inverse-video button highlight matched the default focus indicator with no `focus` config, and none of the specs needed Watcher's own `settledScreen()` workaround for torn Ink frames, because every layout assertion re-evaluates across screen updates.
+
+Friction found, all in authoring ergonomics rather than mechanics:
+
+- **Box locators over-match.** A `├──┤` divider makes a panel three boxes (two halves plus the whole), so `{ box: { containing: '[ INVENTORY ]' } }` fails the strictness check and needs `.last()` for the whole panel. Separately, any text inside an outer frame also matches the frame, so the mode-select buttons needed `.first()` (innermost). Both follow from the rules in [[layout]], but `docs/layout-and-focus.md` only mentions nesting. A title selector or an explicit innermost/outermost option would remove the dependence on match order.
+- **Repeated labels need scoping.** "Spawn Point" appears in the header and the footer, and "Offline" in the hint bar. Chaining (`game.locator({ row: 0 }).locator(...)`) works well; scoping to a fixed rectangle works but is brittle if the layout shifts.
+- **`locator.cells()` returns rows of cells**, not a flat array, and the docs don't say so.
+- **Style-only focus is invisible without color.** Under `colorDepth: 'none'` Watcher's mode-select focus disappears entirely, because it is inverse-only with no marker. This is the case `docs/layout-and-focus.md` already warns about, now observed in a real app. It was not codified as a spec.
+
+The pass also surfaced two application defects, unrelated to RPGWright: Watcher's HUD collapses to a stacked layout at 80×24 that loses the map and right column and garbles the footer row, and its own `bootToGameplay` helper cannot run at that size because it waits for text that layout never draws.
+
 ## What "well tested" means at each exit gate
 
 - **Phase 1/2** (§13): every core module (`pty`, `terminal`, `assertions`, `game`) has direct unit coverage, plus at least one real end-to-end scenario proving the pieces compose correctly against a real fixture, plus a permanent regression test for the §9 failure format — not just inspected once by hand.

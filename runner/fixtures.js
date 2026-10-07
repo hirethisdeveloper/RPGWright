@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { launchGame } = require('../src/game');
+const { viewportName } = require('./config');
 
 const BUILTIN_FIXTURES = ['game', 'viewport', 'launch', 'tmpHome', 'testInfo'];
 
@@ -36,7 +37,7 @@ function splitTopLevel(text, separator) {
 
 /**
  * The fixture names a test, hook or fixture function destructures from its
- * first parameter, read from its source the way Playwright Test does:
+ * first parameter, read from its source:
  * `async ({ game, tmpHome }) => ...` -> ['game', 'tmpHome']. Returns null
  * when that can't be determined (a non-destructured or rest parameter): a
  * test or hook then gets every fixture (see resolveAll), a fixture
@@ -75,6 +76,23 @@ function requestedFixtures(fn) {
     names.push(splitTopLevel(splitTopLevel(entry, '=')[0], ':')[0].trim());
   }
   return names;
+}
+
+/**
+ * Runs every undo function on `stack`, last pushed first, whether or not
+ * an earlier one failed, then throws the first error. Shared by fixture
+ * teardown and the run's services/global hooks.
+ */
+async function unwind(stack) {
+  let firstError = null;
+  while (stack.length) {
+    try {
+      await stack.pop()();
+    } catch (err) {
+      if (!firstError) firstError = err;
+    }
+  }
+  if (firstError) throw firstError;
 }
 
 /**
@@ -168,7 +186,7 @@ function createFixtureScope({ defs = {}, launchOptions, testInfo }) {
       case 'viewport': {
         if (testInfo.viewport) return testInfo.viewport;
         const size = (await resolve('game', chain)).getSize();
-        return { name: `${size.cols}x${size.rows}`, ...size };
+        return { name: viewportName(size), ...size };
       }
       case 'launch':
         // Extra processes for this test (a second client, a server), each
@@ -215,18 +233,10 @@ function createFixtureScope({ defs = {}, launchOptions, testInfo }) {
 
   async function teardown() {
     closed = true;
-    let firstError = null;
-    while (teardowns.length) {
-      try {
-        await teardowns.pop()();
-      } catch (err) {
-        if (!firstError) firstError = err;
-      }
-    }
-    if (firstError) throw firstError;
+    await unwind(teardowns);
   }
 
   return { resolveAll, teardown, games };
 }
 
-module.exports = { BUILTIN_FIXTURES, requestedFixtures, splitTopLevel, createFixtureScope };
+module.exports = { BUILTIN_FIXTURES, requestedFixtures, splitTopLevel, createFixtureScope, unwind };

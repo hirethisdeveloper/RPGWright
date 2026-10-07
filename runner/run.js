@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { loadConfig, validateTrace } = require('./config');
+const { loadConfig, validateTrace, MIN } = require('./config');
 const { shouldWriteTrace, writeTrace } = require('./trace');
 const { discoverTestFiles } = require('./discover');
 const { createReporter } = require('./reporter');
@@ -31,9 +31,9 @@ const BOOLEAN_FLAGS = {
 // Value flags that must be integers, and the smallest value each allows.
 const INTEGER_FLAGS = {
   maxFailures: ['--max-failures', 1],
-  retries: ['--retries', 0],
+  retries: ['--retries', MIN.retries],
   repeatEach: ['--repeat-each', 1],
-  workers: ['--workers', 1],
+  workers: ['--workers', MIN.workers],
 };
 
 function parseArgs(args) {

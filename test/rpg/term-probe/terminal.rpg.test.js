@@ -13,7 +13,7 @@ describe('terminal query replies', () => {
 });
 
 describe('key chords', () => {
-  test('Playwright-style chords reach the app as the bytes a real xterm sends', async ({ game }) => {
+  test('Modifier chords reach the app as the bytes a real xterm sends', async ({ game }) => {
     await game.expectText('READY');
     const cases = [
       ['Shift+Tab', '\\u001b[Z'],

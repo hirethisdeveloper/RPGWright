@@ -3,6 +3,8 @@
 const net = require('node:net');
 const { spawnPipe } = require('../src/pty');
 const { matchesNeedle } = require('../src/assertions');
+const { stopProcess } = require('../src/game');
+const { unwind } = require('./fixtures');
 
 const DEFAULT_READY_TIMEOUT = 30000;
 const STOP_GRACE_MS = 3000;
@@ -63,19 +65,7 @@ async function startService(service) {
     name,
     async stop() {
       if (handle.getExitInfo()) return;
-      handle.kill('SIGTERM');
-      let graceTimer;
-      const exited = await Promise.race([
-        handle.waitForExit(),
-        new Promise((r) => {
-          graceTimer = setTimeout(() => r(null), STOP_GRACE_MS);
-        }),
-      ]);
-      clearTimeout(graceTimer);
-      if (!exited) {
-        handle.kill('SIGKILL');
-        await handle.waitForExit();
-      }
+      await stopProcess(handle, { timeout: STOP_GRACE_MS });
     },
   };
 }
@@ -96,17 +86,7 @@ function loadHook(modulePath) {
  */
 async function startRunEnvironment(config) {
   const undo = [];
-  async function teardown() {
-    let firstError = null;
-    while (undo.length) {
-      try {
-        await undo.pop()();
-      } catch (err) {
-        if (!firstError) firstError = err;
-      }
-    }
-    if (firstError) throw firstError;
-  }
+  const teardown = () => unwind(undo);
 
   try {
     for (const service of config.services || []) {
