@@ -4,6 +4,8 @@
 
 ### Added
 - **`rpgwright test --ui`:** a full-screen live view of the running test: the app's screen redrawn in place at its own size, with the test's name, progress, pass/fail counts, current step and last action. On finish the terminal is restored and the usual summary and failure reports are printed. Runs with one worker, keeps `json`/`junit` file reporters, requires a terminal, and can't be combined with `--watch`.
+- **Interactive `--ui` sessions:** when several tests match, `--ui` opens on a list of them instead of running everything: run the selected test (`enter`), all (`a`), the failed ones (`f`) or the last run again (`r`), as often as you like, and quit with `q`. A single matching test runs at once and stays on screen until `q`. While a test runs, `space` pauses before its next action (its timeout clock stops), `n` steps one action, and `esc` aborts it (its hooks and teardown still run). The summary and exit code reflect the latest result of each test you ran.
+- **`gate` launch option:** an async function awaited before every action, which can hold a test between actions.
 
 ## 0.2.0
 

@@ -205,6 +205,9 @@ async function launchGame({
   scrollback = 1000,
   record = false,
   tty = true,
+  // Awaited before every action (input, expect*/wait*, step, resize) when
+  // given: how the runner's UI pauses a test between actions.
+  gate = null,
 } = {}) {
   const keySequences = { ...KEY_SEQUENCES, ...keys };
   const childEnv = buildEnv(env, { colorDepth, locale });
@@ -355,7 +358,9 @@ async function launchGame({
   // failed wait into the standard failure report. `expected` may be a
   // function, evaluated at failure time, so the report can include what was
   // last observed; it may return { expected, diff } to add a diff section.
-  async function runAssertion(type, detail, expected, wait) {
+  // `gated` is false for a wait that is part of another action (settling).
+  async function runAssertion(type, detail, expected, wait, gated = true) {
+    if (gate && gated) await gate();
     const record = recordAction(type, detail, null);
     try {
       await wait();
@@ -388,9 +393,10 @@ async function launchGame({
   }
 
   async function send(type, bytes, detail, opts) {
+    if (gate) await gate();
     writeInput(bytes);
     recordAction(type, detail, true);
-    if (opts && opts.settle) await waitForStable({ quiet: settleQuiet(opts.settle) });
+    if (opts && opts.settle) await settle(opts.settle);
   }
 
   async function press(key, opts) {
@@ -419,6 +425,7 @@ async function launchGame({
   // all motion. Unreported events are recorded but not sent.
   let heldButton = null;
   async function sendMouse(event, detail, opts = {}) {
+    if (gate) await gate();
     const { mouseTracking, mouseEncoding } = terminal.getModes();
     if (mouseTracking === 'none') {
       throw new Error(
@@ -434,7 +441,7 @@ async function launchGame({
     const report = reported && encodeMouse(event, mouseEncoding);
     if (reported) writeInput(mouseEncoding === 'x10' ? Buffer.from(report, 'latin1') : report);
     recordAction('mouse', reported ? detail : `${detail}, not reported in ${mouseTracking} mode`, true);
-    if (opts.settle) await waitForStable({ quiet: settleQuiet(opts.settle) });
+    if (opts.settle) await settle(opts.settle);
   }
 
   function mouseDetail(name, x, y, opts = {}) {
@@ -561,16 +568,30 @@ async function launchGame({
     return terminal.getModes();
   }
 
-  function waitForStable(opts = {}) {
+  function quietFor(opts, gated) {
     const quiet = opts.quiet ?? DEFAULT_QUIET_MS;
-    return runAssertion('waitForStable', `quiet ${quiet}ms`, `no screen update for ${quiet}ms`, () =>
-      waitForQuiet(onUpdate, { quiet, timeout: opts.timeout ?? expectTimeout }),
+    return runAssertion(
+      'waitForStable',
+      `quiet ${quiet}ms`,
+      `no screen update for ${quiet}ms`,
+      () => waitForQuiet(onUpdate, { quiet, timeout: opts.timeout ?? expectTimeout }),
+      gated,
     );
+  }
+
+  function waitForStable(opts = {}) {
+    return quietFor(opts, true);
+  }
+
+  // An input's `settle` option: part of that action, so not gated again.
+  function settle(option) {
+    return quietFor({ quiet: settleQuiet(option) }, false);
   }
 
   // Groups the actions recorded inside `fn` under a named entry, so the
   // failure report's action list reads as an outline of the scenario.
   async function step(name, fn) {
+    if (gate) await gate();
     const record = recordAction('step', JSON.stringify(name), null);
     stepDepth += 1;
     try {
@@ -838,6 +859,7 @@ async function launchGame({
   }
 
   async function resize(cols, rows) {
+    if (gate) await gate();
     ptyHandle.resize(cols, rows);
     terminal.resize(cols, rows);
     recordEvent('r', `${cols}x${rows}`);

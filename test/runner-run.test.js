@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { parseArgs, resolveOutput, runTests } = require('../runner/run');
+const { parseArgs, resolveOutput, runTests, loadPlan, runOptions } = require('../runner/run');
 
 test('parseArgs: defaults to no config path and no filters', () => {
   assert.deepEqual(parseArgs([]), { configPath: null, filters: [] });
@@ -87,4 +87,32 @@ test('runTests: --ui fails clearly when stdout is not a terminal', async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('runOptions: trace and retries come from the config unless given; an unknown --trace fails clearly', () => {
+  const config = { trace: 'retain-on-failure', retries: 2 };
+  const fromConfig = runOptions(config);
+  assert.equal(fromConfig.trace, 'retain-on-failure');
+  assert.equal(fromConfig.retries, 2);
+  assert.ok(fromConfig.traceNames instanceof Set);
+  const flagged = runOptions(config, { trace: 'on', retries: 0, updateSnapshots: true });
+  assert.deepEqual([flagged.trace, flagged.retries, flagged.updateSnapshots], ['on', 0, true]);
+  assert.throws(() => runOptions(config, { trace: 'sometimes' }), /--trace/);
+});
+
+test('loadPlan: selects by filter and grep across files, in file order, repeating with --repeat-each', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpgwright-plan-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const api = JSON.stringify(path.join(__dirname, '..', 'runner', 'test.js'));
+  fs.writeFileSync(path.join(dir, 'rpgwright.config.js'), `module.exports = { command: 'true' };`);
+  fs.writeFileSync(path.join(dir, 'a.rpg.test.js'), `const { test } = require(${api});\ntest('one @hud', () => {});\ntest('two', () => {});\n`);
+  fs.writeFileSync(path.join(dir, 'b.rpg.test.js'), `const { test } = require(${api});\ntest('three @hud', () => {});\n`);
+
+  const names = (plan) => plan.map(({ file, tests }) => [path.basename(file), tests.map((x) => x.name)]);
+  assert.deepEqual(names(loadPlan({ cwd: dir, grep: '@hud' }).plan), [['a.rpg.test.js', ['one @hud']], ['b.rpg.test.js', ['three @hud']]]);
+  assert.deepEqual(names(loadPlan({ cwd: dir, filters: ['a.rpg'], repeatEach: 2 }).plan), [
+    ['a.rpg.test.js', ['one @hud [repeat 1/2]', 'one @hud [repeat 2/2]', 'two [repeat 1/2]', 'two [repeat 2/2]']],
+  ]);
+  const { files } = loadPlan({ cwd: dir, filters: ['nothing'] });
+  assert.equal(files.length, 2);
 });

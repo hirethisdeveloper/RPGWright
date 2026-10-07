@@ -263,6 +263,8 @@ export interface LaunchOptions {
   record?: boolean;
   /** false: run with plain pipes instead of a terminal (isTTY is false in the app). */
   tty?: boolean;
+  /** Awaited before every action (input, expect and wait methods, step, resize); a pending promise holds the test there. */
+  gate?: (() => Promise<void> | void) | null;
 }
 
 export function launchGame(options: LaunchOptions): Promise<GameDriver>;

@@ -45,7 +45,7 @@ npx rpgwright test --grep @smoke
 | `--fail-on-flaky` | Fail the run if any test only passed on a retry. |
 | `--workers <n>` | Run up to `n` test files at the same time; overrides the config's `workers`. See [Running tests in parallel](#running-tests-in-parallel). |
 | `--watch` | Run the tests, then run them again whenever a file changes. See [Watch mode](#watch-mode). |
-| `--ui` | Watch each test's live terminal screen full-screen while the suite runs. See [UI mode](#ui-mode). |
+| `--ui` | Pick tests from a full-screen list and watch each one's live terminal screen as it runs, with pause, step and abort. See [UI mode](#ui-mode). |
 | `--repeat-each <n>` | Run every selected test `n` times, named `[repeat i/n]`. |
 | `--trace <mode>` | Write an HTML trace for each test: `on`, `off`, or `retain-on-failure` (only for failing tests). Overrides the config's `trace`. See [Diagnostics](./diagnostics.md#traces). |
 
@@ -138,18 +138,55 @@ Every test already gets its own app process, so tests in different files only co
 
 ### UI mode
 
-`rpgwright test --ui` takes over your terminal and shows the test that is running right now, live. The screen is redrawn in place as the app changes, instead of scrolling:
+`rpgwright test --ui` takes over your terminal. You pick which tests to run from a list, and watch the running test's screen live. The screen is redrawn in place as the app changes, instead of scrolling.
+
+#### Interactive selection
+
+The filters, `--grep`, `test.only` and `--repeat-each` choose which tests are in the list, as they choose what a normal run runs.
+
+- **Several tests match** (`rpgwright test hudLayout --ui`): nothing runs yet. The UI opens on a list of the matching tests showing each one's status (`·` pending, `●` running, `✓` passed, `✖` failed, `⊘` aborted, `-` skipped) and how long its last run took. The selected test's file, line and last error are shown below the list. Run whichever tests you want, as often as you want. When a run finishes, you're back on the list.
+- **One test matches** (`rpgwright test menu.rpg.test.js:12 --ui`): it runs at once, and its result stays on screen until you press `q`.
+
+Keys on the list:
+
+| Key | Does |
+| --- | --- |
+| `↑`/`↓` or `k`/`j` | Move the selection |
+| `enter` | Run the selected test |
+| `a` | Run every test in the list, in order |
+| `f` | Run the tests that failed or were aborted |
+| `r` | Rerun the last run (or the selected test, if nothing has run yet) |
+| `q` | Quit |
+
+Keys while a test runs:
+
+| Key | Does |
+| --- | --- |
+| `space` | Pause before the test's next action (a key press, an `expect`, a `test.step`), or resume |
+| `n` | While paused: let one action run, then pause again |
+| `esc` | Abort the test and go back to the list. Its `afterEach`/`afterAll` hooks and fixture teardown still run, and the rest of the run is cancelled |
+| `q` | Abort the test and quit |
+
+`Ctrl+C` always quits, whatever is happening.
+
+A paused test doesn't time out: its timeout clock stops while it's paused. An aborted test counts as failed but is never retried, and gets no trace.
+
+#### The live view
+
+While a test runs, the UI shows:
 
 - **Header:** the test file and name, how far through the run you are (`3/12`), how many tests have passed, failed and been skipped so far, and how long the test and the whole run have taken.
 - **The app's screen**, drawn in a box at the app's own size (`cols`×`rows`), with its colors and cursor. If your terminal is smaller than that, the top-left part that fits is shown and the box's label says so (`100×30 (showing 78×18)`). Resizing your terminal re-draws the layout.
 - **Footer:** the `test.step` you're inside, the last action (`press "Enter" ✓`), and the test's status (`RUNNING`, `PASSED`, or `FAILED` with the first line of its error).
 
-When the run ends, the terminal goes back to how it was and the usual summary and full failure reports are printed, exactly as `list` prints them. Anything your tests print with `console.log` during the run is printed then too. The exit code is the same as without `--ui`. The terminal is also restored if you press Ctrl+C or the run crashes.
+When you quit, the terminal goes back to how it was and the usual summary and full failure reports are printed, exactly as `list` prints them, counting each test you ran once, by its latest result. Tests you never ran aren't counted. Anything your tests print with `console.log` is printed then too. The exit code is `1` if the latest run of any test failed or was aborted (or an `afterAll` hook failed in the last run), otherwise `0`. The terminal is also restored if the run crashes.
 
 `--ui` changes how some other options behave:
 
 - **Workers:** tests run one file at a time (`workers` is forced to `1`), so there's only ever one screen to show.
 - **Reporters:** console reporters (`list`, `dot`, `github`) are replaced by the UI. File reporters (`json`, `junit`) from your config or `--reporter` still write their files.
+- **Retries:** configured `retries` apply to every test you run from the list.
+- **Services and `globalSetup`:** started once when the UI opens, and stopped after you quit.
 - **Watch mode:** `--ui` can't be combined with `--watch`; the run stops with an error.
 - **Output must be a terminal.** If stdout is piped or redirected (CI logs, `| tee`), `--ui` stops with an error. Run without it there.
 

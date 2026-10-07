@@ -1007,39 +1007,50 @@ test('types are stripped and the test runs', async ({ game, viewport }) => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('rpgwright test --ui: runs the menu-nav suite in a real terminal, restoring it and printing the summary after', async () => {
-  const { spawnPty } = require('../src/pty');
-  const handle = spawnPty({
+// Runs `rpgwright test --ui` in a real terminal, driven by RPGWright itself.
+function launchUi(args) {
+  const { launchGame } = require('../src/game');
+  return launchGame({
     command: process.execPath,
-    args: [CLI, 'test', '--ui', '--config', 'test/rpg/menu-nav/rpgwright.config.js'],
+    args: [CLI, 'test', '--ui', '--config', 'test/rpg/menu-nav/rpgwright.config.js', ...args],
     cwd: REPO_ROOT,
-    cols: 100,
+    cols: 120,
     rows: 40,
+    expectTimeout: 30000,
   });
-  let output = '';
-  handle.onData((chunk) => {
-    output += chunk;
-  });
-  let timer;
-  const exit = await Promise.race([
-    handle.waitForExit(),
-    new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        handle.kill('SIGKILL');
-        reject(new Error(`--ui run did not finish:\n${output}`));
-      }, 90000);
-    }),
-  ]).finally(() => clearTimeout(timer));
-  // Let the last of the output drain.
-  await new Promise((r) => setTimeout(r, 200));
-  assert.equal(exit.exitCode, 0, output);
-  const enter = output.indexOf('\x1b[?1049h');
-  const leave = output.lastIndexOf('\x1b[?1049l');
-  assert.ok(enter >= 0, 'entered the alternate screen');
-  assert.ok(leave > enter, 'left the alternate screen after entering it');
-  assert.match(output.slice(enter, leave), /RPGWright/);
-  assert.match(output.slice(leave), /\d+ passed/);
-  assert.doesNotMatch(output.slice(leave), /failed/);
+}
+
+test('rpgwright test --ui: several matching tests open on the HUD; enter runs one, q quits, restoring the terminal and printing the summary', async () => {
+  const ui = await launchUi(['--grep', 'expectScreen with']);
+  try {
+    await ui.expectTerminal('toBeInAltScreen');
+    await ui.expectText('expectScreen with a RegExp matches anywhere in the full screen');
+    await ui.expectText('expectScreen with a string requires an exact whole-screen match');
+    await ui.press('Enter');
+    await ui.expectText('✓ 1 passed');
+    await ui.press('q');
+    await ui.expectExit({ code: 0 });
+    await ui.expectTerminal('toBeInAltScreen', [], { not: true });
+    await ui.expectCursorVisible(true);
+    await ui.expectText(/1 passed \(\d+ms\)/);
+    await ui.expectNotText('failed', { holdFor: 0 });
+  } finally {
+    await ui.stop();
+  }
+});
+
+test('rpgwright test --ui: a single matching test runs at once and stays up until q', async () => {
+  const ui = await launchUi(['navigation.rpg.test.js:73']);
+  try {
+    await ui.expectText('✓ 1 passed');
+    await ui.expectTerminal('toBeInAltScreen');
+    await ui.press('q');
+    await ui.expectExit({ code: 0 });
+    await ui.expectTerminal('toBeInAltScreen', [], { not: true });
+    await ui.expectText(/1 passed \(\d+ms\)/);
+  } finally {
+    await ui.stop();
+  }
 });
 
 test('rpgwright test --ui: fails clearly when the output is not a terminal', () => {
