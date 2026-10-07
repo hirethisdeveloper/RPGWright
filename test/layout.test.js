@@ -370,13 +370,12 @@ test('parseStyleSpans / countCellDiffs: count differing characters and differing
   assert.equal(layout.countCellDiffs({ text: 'ab' }, { text: 'ac' }), 1, 'text-only captures compare text only');
 });
 
-test('locator.click()/hover(): the mouse goes to the region center via the driver; nothing to aim at throws', async () => {
+test('createLocator: source.extend adds members to every locator, including derived ones, with a center() that throws when there is nothing to aim at', async () => {
   const state = await screen(['  Button  ', '', '┌──────┐', '│ big  │', '│      │', '└──────┘']);
-  const calls = [];
-  const driver = { mouse: { click: (...a) => calls.push(['click', ...a]), move: (...a) => calls.push(['move', ...a]) } };
-  const source = { getScreenCells: () => state.grid, driver };
-  layout.createLocator(source, 'Button').click({ button: 'right' });
-  layout.createLocator(source, { box: { containing: 'big' } }).hover();
-  assert.deepEqual(calls, [['click', 4, 0, { button: 'right' }], ['move', 3, 3, undefined]]);
-  assert.throws(() => layout.createLocator(source, 'Nope').click(), /matched nothing, so there is nowhere to point the mouse/);
+  const source = { getScreenCells: () => state.grid, extend: (locator, { center }) => ({ where: () => center() }) };
+  assert.deepEqual(layout.createLocator(source, 'Button').where(), { x: 4, y: 0 });
+  assert.deepEqual(layout.createLocator(source, { box: { containing: 'big' } }).first().where(), { x: 3, y: 3 });
+  assert.deepEqual(layout.createLocator(source, 'Button').locator('ton').where(), { x: 6, y: 0 });
+  assert.throws(() => layout.createLocator(source, 'Nope').where(), /matched nothing, so there is nowhere to point the mouse/);
+  assert.equal(layout.createLocator({ getScreenCells: () => state.grid }, 'Button').click, undefined, 'a bare source adds nothing');
 });

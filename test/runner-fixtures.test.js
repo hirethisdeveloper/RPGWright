@@ -135,6 +135,15 @@ test('createFixtureScope: anything set up after teardown started is torn down at
   assert.deepEqual(removed, ['late']);
 });
 
+test('unwind: runs every undo last-in-first-out, even after one fails, then throws the first error', async () => {
+  const { unwind } = require('../runner/fixtures');
+  const order = [];
+  const stack = [() => order.push('a'), () => { order.push('b'); throw new Error('b failed'); }, () => { order.push('c'); throw new Error('c failed'); }];
+  await assert.rejects(unwind(stack), /c failed/);
+  assert.deepEqual(order, ['c', 'b', 'a']);
+  assert.deepEqual(stack, []);
+});
+
 test('BUILTIN_FIXTURES lists what every test can request', () => {
   assert.deepEqual(BUILTIN_FIXTURES, ['game', 'viewport', 'launch', 'tmpHome', 'testInfo']);
 });

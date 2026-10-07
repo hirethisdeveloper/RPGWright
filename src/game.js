@@ -17,6 +17,8 @@ const {
   formatLineSetDiff,
   formatNeedle,
   matchesNeedle,
+  formatExitInfo,
+  DEFAULT_QUIET_MS,
 } = require('./assertions');
 const { KEY_SEQUENCES, resolveKey, encodeMouse } = require('./keys');
 const { renderScreenHtml } = require('./render');
@@ -34,7 +36,6 @@ const {
 } = require('./layout');
 
 const UPDATE_EVENT = 'update';
-const DEFAULT_STABLE_QUIET = 150;
 // Input actions start a new "since" window for expectSeen, expectNoFlicker
 // and toHaveBell.
 const INPUT_ACTIONS = new Set(['press', 'type', 'paste', 'mouse', 'resize']);
@@ -65,7 +66,7 @@ function buildEnv(env, { colorDepth, locale }) {
 }
 
 function settleQuiet(settle) {
-  return typeof settle === 'number' ? settle : DEFAULT_STABLE_QUIET;
+  return typeof settle === 'number' ? settle : DEFAULT_QUIET_MS;
 }
 
 function formatArg(arg) {
@@ -76,11 +77,6 @@ function formatArg(arg) {
 
 function signalNumber(signal) {
   return typeof signal === 'number' ? signal : os.constants.signals[signal];
-}
-
-function formatExit(info) {
-  if (!info) return 'still running';
-  return info.signal ? `signal ${info.signal}` : `exit code ${info.exitCode}`;
 }
 
 // An exit code only counts for a process that exited on its own: one killed
@@ -161,6 +157,28 @@ function formatScreenMatcher(matcher) {
   if (isSnapshotMatcher(matcher)) return `snapshot "${matcher.snapshot}"`;
   if (matcher instanceof RegExp) return matcher.toString();
   return `${JSON.stringify(matcher)} (exact screen match)`;
+}
+
+/**
+ * The one shutdown policy for a spawned process: send `signal`, give it
+ * `timeout` ms to exit, then SIGKILL. Used for launched apps (stop()) and
+ * background services alike; pty.js itself has no policy. The grace timer
+ * is cleared once the process exits, so it can't keep the caller's event
+ * loop alive for the rest of `timeout`.
+ */
+async function stopProcess(handle, { signal = 'SIGTERM', timeout }) {
+  handle.kill(signal);
+  let graceTimer;
+  const exitInfo = await Promise.race([
+    handle.waitForExit(),
+    new Promise((resolve) => {
+      graceTimer = setTimeout(() => resolve(null), timeout);
+    }),
+  ]);
+  clearTimeout(graceTimer);
+  if (exitInfo) return exitInfo;
+  handle.kill('SIGKILL');
+  return handle.waitForExit();
 }
 
 async function launchGame({
@@ -460,7 +478,7 @@ async function launchGame({
     return runAssertion(
       'expectExit',
       JSON.stringify(want),
-      () => `the process to exit${describeExit(want)}\nObserved: ${formatExit(ptyHandle.getExitInfo())}`,
+      () => `the process to exit${describeExit(want)}\nObserved: ${formatExitInfo(ptyHandle.getExitInfo())}`,
       async () => {
         const info = await exitWithin(opts.timeout ?? expectTimeout);
         if (!exitMatches(info, want)) throw new Error('exited differently');
@@ -517,7 +535,7 @@ async function launchGame({
   }
 
   function waitForStable(opts = {}) {
-    const quiet = opts.quiet ?? DEFAULT_STABLE_QUIET;
+    const quiet = opts.quiet ?? DEFAULT_QUIET_MS;
     return runAssertion('waitForStable', `quiet ${quiet}ms`, `no screen update for ${quiet}ms`, () =>
       waitForQuiet(onUpdate, { quiet, timeout: opts.timeout ?? expectTimeout }),
     );
@@ -562,7 +580,7 @@ async function launchGame({
   // separate write" flash.
   function expectNoFlicker(opts = {}) {
     const since = lastInputFrame();
-    const quiet = opts.quiet ?? DEFAULT_STABLE_QUIET;
+    const quiet = opts.quiet ?? DEFAULT_QUIET_MS;
     let flash = null;
     return runAssertion(
       'expectNoFlicker',
@@ -648,7 +666,7 @@ async function launchGame({
       // Recording a frame mid-redraw would bake a half-drawn screen into
       // the snapshot, so wait for the app to stop drawing first.
       if (opts.stable !== false) {
-        await waitForQuiet(onUpdate, { quiet: DEFAULT_STABLE_QUIET, timeout: opts.timeout ?? expectTimeout });
+        await waitForQuiet(onUpdate, { quiet: DEFAULT_QUIET_MS, timeout: opts.timeout ?? expectTimeout });
       }
       const capture = captureScreen(opts);
       fs.mkdirSync(snapshotsDir, { recursive: true });
@@ -802,24 +820,7 @@ async function launchGame({
     if (stopped) return ptyHandle.getExitInfo();
     stopped = true;
 
-    const timeout = opts.timeout ?? killTimeout;
-    ptyHandle.kill(killSignal);
-
-    // The grace timer is cleared once the process exits, so it can't keep
-    // the caller's event loop alive for the rest of `timeout`.
-    let graceTimer;
-    let exitInfo = await Promise.race([
-      ptyHandle.waitForExit(),
-      new Promise((resolve) => {
-        graceTimer = setTimeout(() => resolve(null), timeout);
-      }),
-    ]);
-    clearTimeout(graceTimer);
-
-    if (!exitInfo) {
-      ptyHandle.kill('SIGKILL');
-      exitInfo = await ptyHandle.waitForExit();
-    }
+    const exitInfo = await stopProcess(ptyHandle, { signal: killSignal, timeout: opts.timeout ?? killTimeout });
 
     dataSubscription.dispose();
     replySubscription.dispose();
@@ -892,9 +893,23 @@ async function launchGame({
     getTrace,
     actions,
   };
-  // Locators carry their source so expect(locator) can reach this driver.
-  const locatorSource = { getScreenCells: () => terminal.getScreenCells(), driver };
+  const locatorSource = {
+    getScreenCells: () => terminal.getScreenCells(),
+    // What a locator can do that geometry can't: point the mouse at its
+    // region, and lead runner/expect.js back to this driver.
+    extend: (locator, { center }) => ({
+      driver,
+      click(opts) {
+        const { x, y } = center();
+        return mouse.click(x, y, opts);
+      },
+      hover(opts) {
+        const { x, y } = center();
+        return mouse.move(x, y, opts);
+      },
+    }),
+  };
   return driver;
 }
 
-module.exports = { launchGame };
+module.exports = { launchGame, stopProcess };

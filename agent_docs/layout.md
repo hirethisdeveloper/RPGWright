@@ -40,9 +40,9 @@ Coordinates are 0-based cells. A rect is `{ x, y, width, height }`; `right = x +
 
 `within` (and the chained `locator.locator(target)`) keeps only matches contained in the outer locator's matches; `nth`/`first()`/`last()` pick one (negative indices count from the end). Text and rect matches are in reading order; box matches keep their innermost-first order.
 
-**Locators are strict**, like Playwright's: `resolveOne()` succeeds only for exactly one match and otherwise explains itself ("matched nothing", or "matched 3 regions (…); use .first(), .last() or .nth(i)"). `boundingBox()`/`textContent()`/`cells()` return `null` for no match and throw for several. The strictness paid off immediately in the dogfood suite: `{ box: { containing: 'Play' } }` also matched the INFO panel, because it shows "Selected: Play". Picking an arbitrary match would have made that test pass or fail depending on box order.
+**Locators are strict**: `resolveOne()` succeeds only for exactly one match and otherwise explains itself ("matched nothing", or "matched 3 regions (…); use .first(), .last() or .nth(i)"). `boundingBox()`/`textContent()`/`cells()` return `null` for no match and throw for several. The strictness paid off immediately in the dogfood suite: `{ box: { containing: 'Play' } }` also matched the INFO panel, because it shows "Selected: Play". Picking an arbitrary match would have made that test pass or fail depending on box order.
 
-`source` is `{ getScreenCells, driver }`. The driver reference is how `runner/expect.js` gets from `expect(locator)` back to `GameDriver.expectLayout`; layout.js itself never uses it.
+`source` is `{ getScreenCells, extend? }`. layout.js stays geometry-only: `extend(locator, { center })` is called for every locator `createLocator` builds (`.first()`, `.locator()`, `.nth()` included) and its result is merged in. `GameDriver` uses it to add `click`/`hover` (aimed with the pure `center()`, which throws when the locator matches nothing) and `driver`, the reference `runner/expect.js` uses to get from `expect(locator)` back to `GameDriver.expectLayout`. A locator made from a bare `{ getScreenCells }` source has none of these.
 
 ## Checks
 

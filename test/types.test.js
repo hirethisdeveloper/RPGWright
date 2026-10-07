@@ -87,7 +87,7 @@ test('types: TestApi declares every method on test, and test.d.ts exports test, 
 });
 
 test('types: the matcher interfaces declare every matcher expect() returns', () => {
-  const fakeLocator = { _isLocator: true, source: { driver: {} } };
+  const fakeLocator = { _isLocator: true, driver: {} };
   const locatorMatchers = expect(fakeLocator);
   const declaredLocator = new Set([...interfaceMembers(testDts, 'LocatorMatchers'), ...interfaceMembers(testDts, 'LocatorAssertions')]);
   assert.deepEqual([...declaredLocator].sort(), Object.keys(locatorMatchers).sort());
@@ -98,10 +98,14 @@ test('types: the matcher interfaces declare every matcher expect() returns', () 
   assert.deepEqual([...declaredGame].sort(), Object.keys(gameMatchers).sort());
 });
 
-test('types: Locator declares every locator method', () => {
-  const locator = require('../src/layout').createLocator({ getScreenCells: () => [] }, 'x');
-  const runtime = Object.keys(locator).filter((k) => !['source', 'target', 'resolveAll', 'resolveOne'].includes(k));
-  assert.deepEqual([...interfaceMembers(indexDts, 'Locator')].sort(), runtime.sort());
+test('types: Locator declares every locator method', async () => {
+  const game = await launchGame({ command: process.execPath, args: [FIXTURE_MINIMAL], cols: 40, rows: 10 });
+  try {
+    const runtime = Object.keys(game.locator('x')).filter((k) => !['source', 'target', 'resolveAll', 'resolveOne', 'driver'].includes(k));
+    assert.deepEqual([...interfaceMembers(indexDts, 'Locator')].sort(), runtime.sort());
+  } finally {
+    await game.stop();
+  }
 });
 
 test('package.json: each export points at its declarations, and they ship', () => {

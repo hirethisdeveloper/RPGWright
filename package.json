@@ -1,7 +1,7 @@
 {
   "name": "rpgwright",
   "version": "0.1.2",
-  "description": "A Playwright-like end-to-end testing framework for real-TTY terminal applications (Ink/React CLI apps, RPG/MUD-style text adventures, and anything else that depends on raw-mode PTY behavior).",
+  "description": "An end-to-end testing framework for real-TTY terminal applications (Ink/React CLI apps, RPG/MUD-style text adventures, and anything else that depends on raw-mode PTY behavior).",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -51,7 +51,6 @@
     "tty",
     "terminal",
     "cli",
-    "ink",
-    "playwright"
+    "ink"
   ]
 }

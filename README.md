@@ -1,12 +1,12 @@
 # RPGWright
 
-A Playwright-like end-to-end testing framework for terminal applications that depend on real TTY behavior — raw input mode, ANSI escape sequences, the alternate screen buffer, cursor positioning. Built for Ink/React CLI apps and RPG/MUD-style text adventures in particular, but works with any real-TTY-driven program.
+An end-to-end testing framework for terminal applications that depend on real TTY behavior — raw input mode, ANSI escape sequences, the alternate screen buffer, cursor positioning. Built for Ink/React CLI apps and RPG/MUD-style text adventures in particular, but works with any real-TTY-driven program.
 
 ## Why
 
 CLI applications are hard to test. Once your app takes over the terminal — prompts, menus, live-updating screens, keyboard navigation — most testing tools stop being useful, because they were built for asserting on log output or a DOM, not on what actually appears on screen. That usually leaves teams stuck testing CLIs by hand.
 
-RPGWright makes CLI apps testable the way Playwright made web apps testable: it drives your program like a real user would (real keystrokes, real terminal) and lets you assert on what's actually rendered.
+RPGWright makes CLI apps testable: it drives your program like a real user would (real keystrokes, real terminal) and lets you assert on what's actually rendered.
 
 Under the hood, this requires more than `child_process.spawn`, since Node only enables raw-mode TTY behavior when it detects a real terminal. RPGWright launches your app inside an actual pseudo-terminal (`node-pty`), drives it with real keystrokes, and asserts against the terminal's actual interpreted screen contents (`@xterm/headless`) — closing the gap between unit tests and manual QA.
 
@@ -32,7 +32,7 @@ npx rpgwright test
 - **How it behaves**: keystrokes and key chords, pastes, mouse clicks and scrolling, signals and exit codes, plus the window title, bell, links and clipboard writes.
 - **When it fails**: a report with the screen and every action, and optional HTML traces and replayable recordings of the whole session.
 
-Tests are written like Playwright Test's, in JavaScript or TypeScript, with fixtures, hooks, retries, parallel workers and CI reporters.
+Tests are written in JavaScript or TypeScript, with fixtures, hooks, retries, parallel workers and CI reporters.
 
 ## Documentation
 

@@ -54,7 +54,7 @@ function fakeLocator() {
     expectLayout: (...args) => calls.push(['expectLayout', ...args]),
     expectCount: (...args) => calls.push(['expectCount', ...args]),
   };
-  const locator = { _isLocator: true, source: { driver } };
+  const locator = { _isLocator: true, driver };
   return { locator, calls };
 }
 
@@ -112,7 +112,7 @@ test('expect(locator): toHaveStyle/toBeFocused go through expectLayout; focus op
 test('expect(locator).toHaveExactlyOneFocused delegates to expectFocusGroup and has no negated form', () => {
   const calls = [];
   const driver = { expectFocusGroup: (...args) => calls.push(args) };
-  const locator = { _isLocator: true, source: { driver } };
+  const locator = { _isLocator: true, driver };
   expect(locator).toHaveExactlyOneFocused({ style: { bold: true } });
   assert.deepEqual(calls, [[locator, { style: { bold: true } }, { style: { bold: true } }]]);
   assert.equal(expect(locator).not.toHaveExactlyOneFocused, undefined);

@@ -79,7 +79,7 @@ test('describe.skip / describe.only: mark the scope, not each test', () => {
   assert.equal(a.skip, false);
 });
 
-test('test.describe is the same function as describe (Playwright spelling)', () => {
+test('test.describe is the same function as describe (alternate spelling)', () => {
   assert.equal(rpgTest.test.describe, rpgTest.describe);
 });
 
@@ -124,6 +124,15 @@ test('test.setTimeout / test.slow at collection time configure the current scope
   assert.equal(t.scope.timeout, 5000);
   assert.equal(t.scope.slow, true);
   assert.throws(() => rpgTest.test.setTimeout('5s'), /test\.setTimeout\(\): "timeout" must be a non-negative number/);
+});
+
+test('test.eachViewport validates a list passed to it, and names viewports "<cols>x<rows>" by default', () => {
+  rpgTest._beginFile();
+  rpgTest.test.eachViewport([{ cols: 40, rows: 12 }, { cols: 80, rows: 24, name: 'wide' }], 'fits', () => {});
+  assert.deepEqual(rpgTest._collect().map((t) => t.name), ['fits [40x12]', 'fits [wide]']);
+  rpgTest._beginFile();
+  assert.throws(() => rpgTest.test.eachViewport([{ cols: 0, rows: 5 }], 'bad', () => {}), /test\.eachViewport\("bad"\): viewports\[0\] must have positive integer/);
+  rpgTest._collect();
 });
 
 test('test.setTimeout / test.slow inside a running test go to the running test\'s info', () => {

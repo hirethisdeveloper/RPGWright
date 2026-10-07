@@ -301,6 +301,13 @@ test('formatFailureReport: adds a Viewport line under Scenario when the size is 
   assert.match(report, /Scenario: fits\nViewport: 80x24\n/);
 });
 
+test('formatExitInfo: a signal replaces the (meaningless) exit code', () => {
+  const { formatExitInfo } = require('../src/assertions');
+  assert.equal(formatExitInfo(null), 'still running');
+  assert.equal(formatExitInfo({ exitCode: 3, signal: null }), 'exit code 3');
+  assert.equal(formatExitInfo({ exitCode: 0, signal: 9 }), 'signal 9');
+});
+
 test('matchesNeedle: substrings and RegExps, with a g/y RegExp giving the same answer however often it is checked', () => {
   const { matchesNeedle, formatNeedle } = require('../src/assertions');
   assert.equal(matchesNeedle('server ready', 'ready'), true);

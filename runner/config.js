@@ -10,7 +10,17 @@ const DEFAULT_REPORTER = 'list';
 const DEFAULT_TRACE = 'off';
 const TRACE_MODES = ['off', 'on', 'retain-on-failure'];
 
+// The smallest value each integer option takes; --retries and --workers on
+// the command line check against the same limits as the config fields.
+const MIN = { retries: 0, workers: 1 };
+
+// A viewport's name unless it is given one: "80x24".
+function viewportName({ cols, rows }) {
+  return `${cols}x${rows}`;
+}
+
 // Validates `viewports` and fills in each one's name ("80x24" by default).
+// `where` prefixes the error (the config path, or the API that was called).
 function normalizeViewports(viewports, resolvedPath) {
   if (viewports === undefined) return undefined;
   if (!Array.isArray(viewports) || viewports.length === 0) {
@@ -21,7 +31,7 @@ function normalizeViewports(viewports, resolvedPath) {
     if (!valid) {
       throw new Error(`${resolvedPath}: viewports[${index}] must have positive integer "cols" and "rows", got ${JSON.stringify(vp)}.`);
     }
-    return { name: vp.name || `${vp.cols}x${vp.rows}`, cols: vp.cols, rows: vp.rows };
+    return { name: vp.name || viewportName(vp), cols: vp.cols, rows: vp.rows };
   });
 }
 
@@ -35,7 +45,7 @@ function validateTimeout(ms, where) {
 }
 
 function validateRetries(retries, resolvedPath) {
-  if (!Number.isInteger(retries) || retries < 0) {
+  if (!Number.isInteger(retries) || retries < MIN.retries) {
     throw new Error(`${resolvedPath}: "retries" must be a non-negative integer, got ${JSON.stringify(retries)}.`);
   }
   return retries;
@@ -55,7 +65,7 @@ function normalizeServices(services, configDir, resolvedPath) {
 }
 
 function validateWorkers(workers, resolvedPath) {
-  if (!Number.isInteger(workers) || workers < 1) {
+  if (!Number.isInteger(workers) || workers < MIN.workers) {
     throw new Error(`${resolvedPath}: "workers" must be a positive integer, got ${JSON.stringify(workers)}.`);
   }
   return workers;
@@ -125,6 +135,9 @@ module.exports = {
   loadConfig,
   validateTrace,
   validateTimeout,
+  normalizeViewports,
+  viewportName,
+  MIN,
   DEFAULT_CONFIG_FILENAME,
   DEFAULT_TEST_MATCH,
   DEFAULT_TEST_TIMEOUT,

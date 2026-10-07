@@ -1,6 +1,6 @@
 # Key sequences
 
-`press(key)` writes the raw bytes a real terminal would send for `key`. `key` is a named key (`'ENTER'`, `'ArrowDown'`), a single character (`'q'`), or a Playwright-style chord (`'Control+ArrowLeft'`, `'Shift+Tab'`).
+`press(key)` writes the raw bytes a real terminal would send for `key`. `key` is a named key (`'ENTER'`, `'ArrowDown'`), a single character (`'q'`), or a modifier chord (`'Control+ArrowLeft'`, `'Shift+Tab'`).
 
 ## The built-in table
 
@@ -31,7 +31,7 @@ Built-in names are case-insensitive, so `'Enter'`, `'ArrowDown'` and `'PageUp'` 
 
 ## Chords: modifier keys
 
-Join modifiers and a key with `+`, the way Playwright does:
+Join modifiers and a key with `+`:
 
 ```js
 await game.press('Control+c');          // \x03

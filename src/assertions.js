@@ -119,7 +119,7 @@ function waitUntilAbsent(onUpdate, isPresent, { timeout = 10000, holdFor = 500 }
  * Rejects with TimeoutError if updates never stop for long enough before
  * `timeout` (e.g. a spinner that animates forever).
  */
-function waitForQuiet(onUpdate, { quiet = 150, timeout = 10000 } = {}) {
+function waitForQuiet(onUpdate, { quiet = DEFAULT_QUIET_MS, timeout = 10000 } = {}) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let quietTimer = null;
@@ -179,12 +179,16 @@ function indent(text, spaces = 2) {
     .join('\n');
 }
 
+// A process killed by a signal reports exit code 0 as well, which would
+// only mislead; the signal is the whole story.
 function formatExitInfo(exitInfo) {
   if (!exitInfo) return 'still running';
-  const parts = [`exit code ${exitInfo.exitCode}`];
-  if (exitInfo.signal) parts.push(`signal ${exitInfo.signal}`);
-  return parts.join(', ');
+  return exitInfo.signal ? `signal ${exitInfo.signal}` : `exit code ${exitInfo.exitCode}`;
 }
+
+// How long the screen has to stay unchanged to count as settled, unless a
+// caller says otherwise.
+const DEFAULT_QUIET_MS = 150;
 
 /**
  * A row-by-row diff of two screens (or any two multi-line texts): rows that
@@ -298,4 +302,4 @@ function matchesNeedle(screenText, needle) {
   return screenText.includes(needle);
 }
 
-module.exports = { TimeoutError, formatNeedle, matchesNeedle, waitUntil, waitUntilAbsent, waitForQuiet, pollUntil, formatFailureReport, formatScreenDiff, formatLineSetDiff, indent };
+module.exports = { TimeoutError, formatNeedle, matchesNeedle, waitUntil, waitUntilAbsent, waitForQuiet, pollUntil, formatFailureReport, formatExitInfo, DEFAULT_QUIET_MS, formatScreenDiff, formatLineSetDiff, indent };
