@@ -78,6 +78,8 @@ console.log(game.actions);
 
 Useful for a quick sanity check mid-test, or from a `console.log` you add temporarily while figuring out why a new scenario isn't behaving as expected.
 
+To watch a test as it runs instead, `rpgwright test --ui` shows the app's live screen, the current step and the last action full-screen while the suite runs (see [UI mode](./cli.md#ui-mode)).
+
 ## Traces
 
 The failure report shows the screen at the moment of failure. A **trace** shows it at every step: an HTML file with each action in order, the screen as it looked when that action finished (drawn with its colors, highlights and cursor), the failure report, and the final screen. Open it in any browser; it needs no network access or scripts.

@@ -9,7 +9,7 @@ An end-to-end testing framework for terminal applications that depend on real TT
 ## Architecture
 
 ```
-CLI (`rpgwright` bin: init / test subcommands)
+CLI (`rpgwright` bin: init / test / play subcommands)
    │
    ▼
 Test runner (rpgwright/test — test(), expect(), fixtures, reporter)
@@ -40,22 +40,26 @@ GameDriver  (game.js — public API)
 - `src/assertions.js` — four wait primitives (`waitUntil`, `waitUntilAbsent`, `waitForQuiet`, `pollUntil`, all event/poll-driven, never a raw setInterval-as-sync-mechanism) and `formatFailureReport()` (the §9 failure block).
 - `src/keys.js` — named key → raw byte sequence table (`KEY_SEQUENCES`), extendable via `launchGame`'s `keys` option, plus `resolveKey()` for modifier chords (`Control+ArrowLeft`) and `encodeMouse()` for mouse reports in each encoding.
 - `src/layout.js` — pure screen geometry over the cell grid: text and box-drawing detection, strict lazy locators (`createLocator`), and the layout/style checks (`CHECKS`/`evaluateCheck`) that `GameDriver.expectLayout` waits on.
-- `src/render.js` — pure cell-grid → HTML rendering (xterm default palette, inverse, wide characters, cursor), used by `game.renderHtml()` and traces.
+- `src/render.js` — pure cell-grid → HTML rendering (xterm default palette, inverse, wide characters, cursor), used by `game.renderHtml()` and traces; also `renderScreenAnsi` (the same grid as SGR rows, for the full-screen UI) and `stripAnsi`, the one escape-sequence stripper.
 - `src/game.js` — `GameDriver`/`launchGame()`, the full public API: `press`/`press.raw`, `type`, `expectText`, `expectNotText`, `expectScreen`, `expectState`, `waitForStable`, `step`, `locator`/`expectLayout`/`expectCount`/`expectFocusGroup`/`getFocused`, `expectCursorAt`/`expectCursorVisible`/`getCursor`, `expectSeen`/`expectNoFlicker` (over a bounded frame history), `expectTerminal` (modes, title, bell, hyperlinks, clipboard, scrollback), `paste`/`mouse`, `kill`/`waitForExit`/`expectExit`, `resize`, `stop`, plus `getScreenText`/`renderHtml`/`getTrace`/`actions`; also forwards terminal query replies and applies `term`/`colorDepth`/`locale`.
 - `src/index.js` — core package entry point re-exporting the above for advanced/direct consumption (`launchGame`, `spawnPty`/`spawnPipe`, `createVirtualTerminal`, `KEY_SEQUENCES`/`resolveKey`/`encodeMouse`, `renderScreenHtml`).
 - `src/pty.js` also provides `spawnPipe`, the same handle over plain pipes, for `tty: false` and background services.
 - `types/` — hand-written TypeScript declarations (`index.d.ts`, `test.d.ts`), checked against the code by `test/types.test.js` (exported names, every `GameDriver` member including `press.*`/`mouse.*`, `LaunchOptions`, built-in fixtures, layout checks, `test.*` and the matchers; not parameter or return types).
-- `runner/config.js` — `rpgwright.config.js` loader + validation; validates and defaults the runner-level fields (`testDir`, `testMatch`, `timeout`, `reporter`, `viewports`, `trace`, `retries`, `workers`, `services`, `globalSetup`/`globalTeardown`, `outputDir`); launchGame-specific fields pass through untouched.
+- `runner/config.js` — `rpgwright.config.js` loader + validation; validates and defaults the runner-level fields (`testDir`, `testMatch`, `timeout`, `reporter`, `viewports`, `trace`, `saveRun`, `retries`, `workers`, `services`, `globalSetup`/`globalTeardown`, `outputDir`); launchGame-specific fields pass through untouched.
 - `runner/discover.js` — hand-rolled glob-to-RegExp test-file discovery (no external glob dependency).
 - `runner/test.js` — the authoring API (`test`/`describe` and their `skip`/`only`/`fixme`/`fail` variants, hooks, `test.use`, `test.setTimeout`/`slow`/`step`/`info`) and its per-file scope tree (`_beginFile`/`_collect`/`_scopeChain`), re-exported with `expect` as `rpgwright/test`.
 - `runner/fixtures.js` — lazy fixtures: reading destructured fixture names, and the per-test scope that creates/tears down built-ins (`game`, `viewport`, `launch`, `tmpHome`, `testInfo`) and `test.extend` fixtures.
 - `runner/expect.js` — `expect(game).toX()` and `expect(locator).toX()` sugar, delegating straight to `GameDriver`'s `expect*` methods.
+- `runner/ui.js` — the full-screen view (`createFullscreen`: alt screen, always restored, raw-mode keys, coalesced frames; `screenLines`: header + boxed screen + footer) and the `--ui` reporter built on it, which draws the running test's live screen (`game.observe` + `renderScreenAnsi`) with header/footer, then prints the shared summary; in interactive mode also the test-selection HUD and run-control keys.
+- `runner/session.js` — the `--ui` interactive session: runs selected tests on demand (re-entrant, via `runFile`), with pause/stepOnce gating (the `gate` launch option) and abort.
+- `runner/runfile.js` — the `.run.json` run file (`--save-run`): built from a test's outcome and each driver's `getTrace()`, written next to its trace, and read back with `readRunFile()`, which validates the format and version with clear errors.
+- `runner/play.js` — `rpgwright play`: replays one session of a run file into a fresh virtual terminal on its recorded timeline (`createPlayback`, a pure scheduler over an injectable clock, with speed and pause), drawn with `ui.js`'s full-screen view, with `--speed`/speed keys stepping through `SPEEDS` and `space` pausing; never launches the app.
 - `runner/trace.js` — per-test HTML trace files (`trace: on | retain-on-failure`) and asciinema `.cast` recordings, built from `game.getTrace()`.
 - `runner/services.js` — background `services` (ready by output text or port) and `globalSetup`/`globalTeardown` around a run.
 - `runner/reporter.js` — built-in reporters: console `list`/`dot` (sharing one summary/failure-block printer that prints §9 blocks), file-writing `json`/`junit`, and `github` annotations; several can run at once.
 - `runner/run.js` — orchestration: parse CLI options → discover → collect every file (`.ts` included) → select (filters/grep/only/repeat-each) → start services/globalSetup → run files on up to `workers` concurrent workers (output kept in file order) → per test, open/close scopes (beforeAll/afterAll), set up requested fixtures with merged `test.use` options, run hooks + body under an adjustable deadline (inside an AsyncLocalStorage context), tear fixtures down, retry failures, write traces, report; plus `--watch`.
 - `runner/init.js` — `rpgwright init`'s scaffold (a genuinely self-contained, dependency-free example that passes immediately).
-- `bin/rpgwright.js` — the `rpgwright` CLI entry (`init`, `test` subcommands).
+- `bin/rpgwright.js` — the `rpgwright` CLI entry (`init`, `test`, `play` subcommands).
 
 ## Engineering conventions (in brief — see `RPGWright.md` §11 for the full rationale)
 
@@ -64,6 +68,10 @@ GameDriver  (game.js — public API)
 - No stale code: superseded scaffolding is deleted in the same change that replaces it, not left "for reference."
 - Prefer extending an existing file/function over creating a new one.
 - No phase/plan references in source comments — that context belongs in commit messages and `agent_docs/`.
+
+## Git attribution
+
+Claude-assisted work is credited here, once: `Co-Authored-By: Claude <noreply@anthropic.com>`. Do not add that trailer (or any other `Co-Authored-By` / "Generated with Claude Code" attribution line) to commit messages or PR descriptions.
 
 ## `agent_docs/` index
 

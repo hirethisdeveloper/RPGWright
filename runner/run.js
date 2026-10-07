@@ -5,11 +5,14 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { loadConfig, validateTrace, MIN } = require('./config');
 const { shouldWriteTrace, writeTrace } = require('./trace');
+const { writeRunFile } = require('./runfile');
 const { discoverTestFiles } = require('./discover');
-const { createReporter } = require('./reporter');
+const { createReporter, combineReporters, FILE_REPORTERS } = require('./reporter');
+const { createUiReporter } = require('./ui');
 const testModule = require('./test');
 const { createFixtureScope, requestedFixtures } = require('./fixtures');
 const { startRunEnvironment } = require('./services');
+const { createSession } = require('./session');
 
 const VALUE_FLAGS = {
   '--config': 'configPath',
@@ -27,6 +30,8 @@ const BOOLEAN_FLAGS = {
   '--update-snapshots': 'updateSnapshots',
   '--fail-on-flaky': 'failOnFlaky',
   '--watch': 'watch',
+  '--ui': 'ui',
+  '--save-run': 'saveRun',
 };
 // Value flags that must be integers, and the smallest value each allows.
 const INTEGER_FLAGS = {
@@ -66,6 +71,9 @@ function parseArgs(args) {
       throw new Error(`${flag} requires ${min === 0 ? 'a non-negative' : 'a positive'} integer.`);
     }
     opts[key] = n;
+  }
+  if (opts.ui && opts.watch) {
+    throw new Error('--ui can\'t be combined with --watch: the UI owns the terminal for a single run. Use one or the other.');
   }
   return opts;
 }
@@ -112,11 +120,16 @@ function isSkipped(t) {
 /**
  * The running test's timeout, adjustable while it runs (test.setTimeout /
  * test.slow inside the body restart the timer from the test's start).
- * `promise` rejects when the deadline passes; 0 means no timeout.
+ * `promise` rejects when the deadline passes; 0 means no timeout. While
+ * held (a UI session paused the test) the clock stops: the held time is
+ * added to the deadline on release. `control`, a session's run control,
+ * is told about the deadline so it can hold it.
  */
-function createDeadline(timeoutMs, label = 'Test') {
+function createDeadline(timeoutMs, label = 'Test', control = null) {
   const start = Date.now();
   let timer = null;
+  let heldMs = 0;
+  let heldSince = null;
   let rejectFn;
   const promise = new Promise((_, reject) => {
     rejectFn = reject;
@@ -126,14 +139,27 @@ function createDeadline(timeoutMs, label = 'Test') {
   function arm(ms) {
     clearTimeout(timer);
     deadline.timeout = ms;
-    if (ms === 0) return;
+    if (ms === 0 || heldSince !== null) return;
     timer = setTimeout(
       () => {
         deadline.error = new Error(`${label} exceeded its ${ms}ms timeout.`);
         rejectFn(deadline.error);
       },
-      Math.max(0, start + ms - Date.now()),
+      Math.max(0, start + heldMs + ms - Date.now()),
     );
+  }
+
+  const untrack = control ? control.track({ hold, release }) : () => {};
+  function hold() {
+    if (heldSince !== null) return;
+    heldSince = Date.now();
+    clearTimeout(timer);
+  }
+  function release() {
+    if (heldSince === null) return;
+    heldMs += Date.now() - heldSince;
+    heldSince = null;
+    arm(deadline.timeout);
   }
 
   const deadline = {
@@ -142,7 +168,10 @@ function createDeadline(timeoutMs, label = 'Test') {
     promise,
     setTimeout: arm,
     slow: () => arm(deadline.timeout * 3),
-    clear: () => clearTimeout(timer),
+    clear: () => {
+      clearTimeout(timer);
+      untrack();
+    },
   };
   arm(timeoutMs);
   return deadline;
@@ -168,18 +197,20 @@ async function runHooks(hooks, fixtures) {
   for (const hook of hooks) await hook(fixtures);
 }
 
-// Runs `work` against a deadline; a timed-out `work` is abandoned (its
+// Runs `work` against a deadline, and against a UI session's abort when
+// `control` is given; a timed-out or aborted `work` is abandoned (its
 // eventual rejection has nowhere to go).
-function withinDeadline(work, deadline) {
+function withinDeadline(work, deadline, control = null) {
   work.catch(() => {});
-  return Promise.race([work, deadline.promise]);
+  return Promise.race(control ? [work, deadline.promise, control.aborting] : [work, deadline.promise]);
 }
 
 // beforeAll/afterAll hooks get the same timeout a test in their scope would.
-async function runScopeHooks(hooks, kind, timeout) {
-  const deadline = createDeadline(timeout, `${kind} hook`);
+// Only setup (beforeAll) can be aborted: cleanup always gets to run.
+async function runScopeHooks(hooks, kind, timeout, control) {
+  const deadline = createDeadline(timeout, `${kind} hook`, control);
   try {
-    await withinDeadline(runHooks(hooks, {}), deadline);
+    await withinDeadline(runHooks(hooks, {}), deadline, kind === 'beforeAll' ? control : null);
   } catch (err) {
     throw toError(err);
   } finally {
@@ -205,15 +236,19 @@ function fixturesFor(fns) {
  * tear the fixtures down (stopping any launched game) whatever happened.
  */
 async function runTest(t, chain, config, cliOptions, holder, attempt) {
+  const { control } = cliOptions;
   const options = Object.assign({}, ...chain.map((s) => s.use), t.use);
   const launchOptions = { ...config, ...options, scenarioName: t.name };
   if (cliOptions.updateSnapshots) launchOptions.updateSnapshots = true;
-  // Record the session for a .cast file whenever a trace may be written.
-  if (cliOptions.trace !== 'off') launchOptions.record = true;
+  // Record the session whenever a trace (and its .cast) or a run file may
+  // be written.
+  if (cliOptions.trace !== 'off' || cliOptions.saveRun) launchOptions.record = true;
+  // A UI session's pause gate, awaited before every game action.
+  if (control) launchOptions.gate = control.gate;
   const beforeEach = chain.flatMap((s) => s.hooks.beforeEach);
   const afterEach = [...chain].reverse().flatMap((s) => s.hooks.afterEach);
 
-  const deadline = createDeadline(resolveTimeout(chain, config));
+  const deadline = createDeadline(resolveTimeout(chain, config), 'Test', control);
   const info = {
     title: t.titlePath[t.titlePath.length - 1],
     titlePath: t.titlePath,
@@ -234,6 +269,7 @@ async function runTest(t, chain, config, cliOptions, holder, attempt) {
     defs: t.fixtureDefs,
     launchOptions,
     testInfo: info,
+    onGame: cliOptions.onGame,
   });
   holder.games = fixtureScope.games;
   const run = { games: fixtureScope.games, info };
@@ -245,23 +281,23 @@ async function runTest(t, chain, config, cliOptions, holder, attempt) {
     await t.fn(fixtures);
   });
 
-  // If the deadline wins, the body is abandoned: it keeps running until
-  // teardown stops its game, and anything it sets up after that is torn
-  // down straight away (see createFixtureScope).
+  // If the deadline (or an abort) wins, the body is abandoned: it keeps
+  // running until teardown stops its game, and anything it sets up after
+  // that is torn down straight away (see createFixtureScope).
   let error = null;
-  let timedOut = false;
+  let interrupted = false;
   try {
-    await withinDeadline(body, deadline);
+    await withinDeadline(body, deadline, control);
   } catch (err) {
     error = err;
-    timedOut = err === deadline.error;
+    interrupted = err === deadline.error || isAbort(err, cliOptions);
   }
   // afterEach always runs once the fixtures exist, innermost scope first,
   // before teardown and before the next test starts; the test's own error
-  // wins over a later afterEach error. After a timeout it gets a fresh
-  // timeout of its own rather than none at all.
+  // wins over a later afterEach error. After a timeout or an abort it gets
+  // a fresh timeout of its own rather than none at all.
   if (fixtures && afterEach.length > 0) {
-    const hooksDeadline = timedOut ? createDeadline(deadline.timeout, 'afterEach hook') : deadline;
+    const hooksDeadline = interrupted ? createDeadline(deadline.timeout, 'afterEach hook', control) : deadline;
     try {
       await withinDeadline(testModule._runWith(run, () => runHooks(afterEach, fixtures)), hooksDeadline);
     } catch (err) {
@@ -278,22 +314,30 @@ async function runTest(t, chain, config, cliOptions, holder, attempt) {
   if (error) throw toError(error);
 }
 
+// Whether `error` is the current UI session run's abort.
+function isAbort(error, cliOptions) {
+  return Boolean(cliOptions.control && error && error === cliOptions.control.aborted);
+}
+
 /**
  * Runs one file's selected tests in order, opening a describe scope (its
  * beforeAll hooks) just before its first runnable test and closing it (its
  * afterAll hooks) once the next test is outside it. A failing beforeAll
  * fails every test in its scope without launching them. A failed test is
  * retried up to `retries` times; one that passes on a retry is flaky.
+ * In a UI session (`cliOptions.control`), an aborted test is reported as
+ * failed with the abort error, never retried, and stops the file.
  */
 async function runFile(tests, config, cliOptions, reporter, budget) {
   const open = [];
+  const { control } = cliOptions;
 
   async function closeScopesBeyond(depth) {
     while (open.length > depth) {
       const scope = open.pop();
       if (scope.beforeAllError) continue;
       try {
-        await runScopeHooks([...scope.hooks.afterAll].reverse(), 'afterAll', resolveTimeout(testModule._scopeChain(scope), config));
+        await runScopeHooks([...scope.hooks.afterAll].reverse(), 'afterAll', resolveTimeout(testModule._scopeChain(scope), config), control);
       } catch (err) {
         reporter.testFailed(`${scope.name || 'file'} > afterAll`, 0, err);
         budget.failures += 1;
@@ -302,7 +346,7 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
   }
 
   for (const t of tests) {
-    if (budget.failures >= budget.max) break;
+    if (budget.failures >= budget.max || (control && control.aborted)) break;
     const meta = { file: t.file, line: t.line };
     if (isSkipped(t)) {
       reporter.testSkipped(t.name, meta);
@@ -318,7 +362,7 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
       scope.beforeAllError = null;
       if (open.some((s) => s.beforeAllError)) continue;
       try {
-        await runScopeHooks(scope.hooks.beforeAll, 'beforeAll', resolveTimeout(testModule._scopeChain(scope), config));
+        await runScopeHooks(scope.hooks.beforeAll, 'beforeAll', resolveTimeout(testModule._scopeChain(scope), config), control);
       } catch (err) {
         scope.beforeAllError = err;
       }
@@ -326,6 +370,7 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
 
     const failedSetup = chain.find((s) => s.beforeAllError);
     for (let retry = 0; ; retry += 1) {
+      if (reporter.testStarted) reporter.testStarted(t.name, meta, { retry });
       const testStart = Date.now();
       const holder = {};
       let error = null;
@@ -339,35 +384,54 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
         }
       }
 
-      if (t.fail && !failedSetup) {
+      const aborted = isAbort(error, cliOptions);
+      if (t.fail && !failedSetup && !aborted) {
         error = error ? null : new Error('Expected this test to fail (test.fail), but it passed.');
       }
-      if (holder.games && holder.games.length > 0 && shouldWriteTrace(cliOptions.trace, Boolean(error))) {
+      const duration = Date.now() - testStart;
+      const final = !error || failedSetup || aborted || retry >= cliOptions.retries;
+      const games = holder.games || [];
+      // Where a failure's artifacts went, appended to its message below.
+      const written = [];
+      // One run file per test, for its final attempt only, written before
+      // the message gains those lines.
+      if (cliOptions.saveRun && final && games.length > 0) {
+        const runFile = writeRunFile(config.outputDir, {
+          title: t.name,
+          file: t.file,
+          line: t.line,
+          status: aborted ? 'aborted' : error ? 'failed' : 'passed',
+          durationMs: duration,
+          error,
+          traces: games.map((game) => game.getTrace()),
+        }, { testDir: config.testDir, taken: cliOptions.runNames });
+        written.push(`Run: ${runFile}`);
+      }
+      if (!aborted && games.length > 0 && shouldWriteTrace(cliOptions.trace, Boolean(error))) {
         // One trace per launched process; the second and later are named
         // after their launch order.
-        holder.games.forEach((game, index) => {
+        games.forEach((game, index) => {
           const name = retry > 0 ? `${t.name} (retry ${retry})` : t.name;
-          const written = writeTrace(config.outputDir, {
+          const files = writeTrace(config.outputDir, {
             testName: index === 0 ? name : `${name} (process ${index + 1})`,
             file: t.file,
             passed: !error,
-            durationMs: Date.now() - testStart,
+            durationMs: duration,
             error,
             trace: game.getTrace(),
           }, { testDir: config.testDir, taken: cliOptions.traceNames });
-          if (error) {
-            error.message += `${index === 0 ? '\n' : ''}\nTrace: ${written.trace}`;
-            if (written.cast) error.message += `\nRecording: ${written.cast}`;
-          }
+          written.push(`Trace: ${files.trace}`);
+          if (files.cast) written.push(`Recording: ${files.cast}`);
         });
       }
+      // An abort's error is the session's own, shared object: left alone.
+      if (error && !aborted && written.length > 0) error.message += `\n\n${written.join('\n')}`;
 
-      const duration = Date.now() - testStart;
       if (!error) {
         reporter.testPassed(t.name, duration, { retry }, meta);
         break;
       }
-      if (failedSetup || retry >= cliOptions.retries) {
+      if (final) {
         reporter.testFailed(t.name, duration, error, { retry }, meta);
         budget.failures += 1;
         break;
@@ -382,8 +446,8 @@ async function runFile(tests, config, cliOptions, reporter, budget) {
 // file order, keeping the output identical to a serial run's.
 function bufferedReporter() {
   const events = [];
-  const buffer = { flushTo: (reporter) => events.forEach(([method, args]) => reporter[method](...args)) };
-  for (const method of ['fileStarted', 'testPassed', 'testFailed', 'testSkipped']) {
+  const buffer = { flushTo: (reporter) => events.forEach(([method, args]) => reporter[method] && reporter[method](...args)) };
+  for (const method of ['fileStarted', 'testStarted', 'testPassed', 'testFailed', 'testSkipped']) {
     buffer[method] = (...args) => events.push([method, args]);
   }
   return buffer;
@@ -465,12 +529,79 @@ function collectFiles(files) {
 }
 
 /**
- * Discovers every test file matching the resolved config, collects all of
- * their tests up front (so test.only and filters apply across files), then
- * runs them file by file. Each test gets the fixtures it asks for, set up
- * fresh (a test that asks for `game` gets its own newly launched
- * GameDriver) and torn down whatever happened — this is the runner's whole
- * reason to exist over hand-rolled launch/try/finally-stop boilerplate.
+ * How a run reports: the reporter spec and worker count, from the CLI
+ * options and the config. --ui takes the terminal for itself, so it runs
+ * one file at a time and keeps only the reporters that write files.
+ */
+function resolveOutput({ ui, reporter, workers }, config) {
+  // --reporter list,github runs several, like a list in the config.
+  const flagged = reporter && reporter.includes(',') ? reporter.split(',') : reporter;
+  const spec = flagged || config.reporter;
+  if (!ui) return { reporterSpec: spec, workers: workers ?? config.workers };
+  const fileReporters = (Array.isArray(spec) ? spec : [spec]).filter((entry) =>
+    FILE_REPORTERS.includes(Array.isArray(entry) ? entry[0] : entry),
+  );
+  return { reporterSpec: fileReporters.length > 0 ? fileReporters : null, workers: 1 };
+}
+
+/**
+ * Resolves the config, discovers every matching test file and collects all
+ * of their tests up front (so test.only and filters apply across files),
+ * then selects: `plan` is [{ file, tests }] in file order, each file's
+ * selected tests (repeated by --repeat-each) in declaration order.
+ */
+function loadPlan({ cwd = process.cwd(), configPath, filters = [], grep, grepInvert, repeatEach = 1 } = {}) {
+  const config = loadConfig({ configPath, cwd });
+  const files = discoverTestFiles({ testDir: config.testDir, testMatch: config.testMatch });
+  testModule._setConfig(config);
+  const collected = collectFiles(files);
+  const selected = new Set(selectTests(collected.flatMap((f) => f.tests), { filters, grep, grepInvert, cwd }));
+  // --repeat-each runs every selected test that many times, back to back.
+  const repeated = (t) =>
+    repeatEach === 1
+      ? [t]
+      : Array.from({ length: repeatEach }, (_, i) => ({ ...t, name: `${t.name} [repeat ${i + 1}/${repeatEach}]`, repeatEachIndex: i }));
+  const plan = collected
+    .map(({ file, tests }) => ({ file, tests: tests.filter((t) => selected.has(t)).flatMap(repeated) }))
+    .filter(({ tests }) => tests.length > 0);
+  return { config, files, plan };
+}
+
+// The per-run options every runFile/runTest call shares.
+function runOptions(config, { updateSnapshots, trace, retries, saveRun, onGame } = {}) {
+  return {
+    updateSnapshots,
+    trace: trace === undefined ? config.trace : validateTrace(trace, '--trace'),
+    retries: retries ?? config.retries,
+    saveRun: Boolean(saveRun ?? config.saveRun),
+    traceNames: new Set(),
+    runNames: new Set(),
+    onGame,
+  };
+}
+
+/**
+ * An interactive session over `plan` (see runner/session.js): each run()
+ * goes through runFile, one worker, with the session's run control.
+ */
+function createRunSession(plan, { config, cliOptions, reporter, maxFailures }) {
+  return createSession({
+    plan,
+    testDir: config.testDir,
+    reporter,
+    maxFailures,
+    runFile: (tests, sessionReporter, control, budget) =>
+      runFile(tests, config, { ...cliOptions, workerIndex: 0, control }, sessionReporter, budget),
+  });
+}
+
+/**
+ * Loads the plan, then runs it file by file. Each test gets the fixtures it
+ * asks for, set up fresh (a test that asks for `game` gets its own newly
+ * launched GameDriver) and torn down whatever happened — this is the
+ * runner's whole reason to exist over hand-rolled launch/try/finally-stop
+ * boilerplate. With --ui the plan becomes an interactive session instead,
+ * run on demand from the UI until the user quits.
  */
 async function runTests({
   cwd = process.cwd(),
@@ -486,21 +617,12 @@ async function runTests({
   retries,
   repeatEach = 1,
   workers,
+  ui,
+  saveRun,
+  stdout = process.stdout,
 } = {}) {
-  const config = loadConfig({ configPath, cwd });
-  const traceMode = trace === undefined ? config.trace : validateTrace(trace, '--trace');
-  const files = discoverTestFiles({ testDir: config.testDir, testMatch: config.testMatch });
-  testModule._setConfig(config);
-  const collected = collectFiles(files);
-  const selected = new Set(selectTests(collected.flatMap((f) => f.tests), { filters, grep, grepInvert, cwd }));
-  // --repeat-each runs every selected test that many times, back to back.
-  const repeated = (t) =>
-    repeatEach === 1
-      ? [t]
-      : Array.from({ length: repeatEach }, (_, i) => ({ ...t, name: `${t.name} [repeat ${i + 1}/${repeatEach}]`, repeatEachIndex: i }));
-  const plan = collected
-    .map(({ file, tests }) => ({ file, tests: tests.filter((t) => selected.has(t)).flatMap(repeated) }))
-    .filter(({ tests }) => tests.length > 0);
+  const { config, files, plan } = loadPlan({ cwd, configPath, filters, grep, grepInvert, repeatEach });
+  const cliOptions = runOptions(config, { updateSnapshots, trace, retries, saveRun });
 
   if (list) {
     for (const { file, tests } of plan) {
@@ -511,9 +633,16 @@ async function runTests({
     return { passed: 0, failed: 0, skipped: 0, flaky: 0 };
   }
 
-  // --reporter list,github runs several, like a list in the config.
-  const reporters = reporter && reporter.includes(',') ? reporter.split(',') : reporter;
-  const activeReporter = createReporter(reporters || config.reporter, { outputDir: config.outputDir, cwd });
+  if (ui && !stdout.isTTY) {
+    throw new Error('--ui needs an interactive terminal, but stdout is not a TTY (is the output piped or redirected?). Run without --ui.');
+  }
+  const output = resolveOutput({ ui, reporter, workers }, config);
+  const reporterOptions = { outputDir: config.outputDir, cwd };
+  const fileReporter = output.reporterSpec && createReporter(output.reporterSpec, reporterOptions);
+  const uiReporter = ui ? createUiReporter({ stdout, total: plan.reduce((n, { tests }) => n + tests.length, 0) }) : null;
+  const activeReporter = uiReporter ? combineReporters(fileReporter ? [uiReporter, fileReporter] : [uiReporter]) : fileReporter;
+  if (uiReporter) cliOptions.onGame = uiReporter.onGame;
+  const session = uiReporter && plan.length > 0 ? createRunSession(plan, { config, cliOptions, reporter: activeReporter, maxFailures }) : null;
   const start = Date.now();
 
   if (files.length === 0) {
@@ -536,14 +665,16 @@ async function runTests({
   let teardownEnvironment = async () => {};
   try {
     if (plan.length > 0) teardownEnvironment = await startRunEnvironment(config);
-    await runPlan(plan, {
-      config,
-      cliOptions: { updateSnapshots, trace: traceMode, retries: retries ?? config.retries, traceNames: new Set() },
-      reporter: activeReporter,
-      budget,
-      workers: workers ?? config.workers,
-    });
+    if (session) {
+      // Several tests open on the selection HUD; a single one runs at once.
+      await uiReporter.interactive(session, { autoRun: session.tests.length === 1 });
+    } else {
+      await runPlan(plan, { config, cliOptions, reporter: activeReporter, budget, workers: output.workers });
+    }
   } finally {
+    // Give the terminal back before anything else is printed (or an error
+    // propagates to the CLI's own message).
+    if (uiReporter) uiReporter.close();
     await teardownEnvironment();
     process.off('unhandledRejection', onUnhandled);
   }
@@ -642,4 +773,4 @@ async function runCli(args) {
   process.exitCode = totals.failed > 0 || totals.unhandled > 0 || (options.failOnFlaky && totals.flaky > 0) ? 1 : 0;
 }
 
-module.exports = { runTests, runCli, parseArgs };
+module.exports = { runTests, runCli, parseArgs, resolveOutput, loadPlan, runOptions, createRunSession };

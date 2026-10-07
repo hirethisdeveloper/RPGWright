@@ -45,8 +45,10 @@ npx rpgwright test --grep @smoke
 | `--fail-on-flaky` | Fail the run if any test only passed on a retry. |
 | `--workers <n>` | Run up to `n` test files at the same time; overrides the config's `workers`. See [Running tests in parallel](#running-tests-in-parallel). |
 | `--watch` | Run the tests, then run them again whenever a file changes. See [Watch mode](#watch-mode). |
+| `--ui` | Pick tests from a full-screen list and watch each one's live terminal screen as it runs, with pause, step and abort. See [UI mode](#ui-mode). |
 | `--repeat-each <n>` | Run every selected test `n` times, named `[repeat i/n]`. |
 | `--trace <mode>` | Write an HTML trace for each test: `on`, `off`, or `retain-on-failure` (only for failing tests). Overrides the config's `trace`. See [Diagnostics](./diagnostics.md#traces). |
+| `--save-run` | Save a replayable `.run.json` file for each test that launched an app, passed or failed, for `rpgwright play`. Same as `saveRun: true` in the config. See [Saving and replaying runs](#saving-and-replaying-runs). |
 
 ### Filters
 
@@ -135,6 +137,106 @@ Every test already gets its own app process, so tests in different files only co
 
 `rpgwright test --watch` runs the tests, then waits. When a test file changes, it reruns that file. When any other file changes, it reruns everything you selected. By default it watches the test directory and the config file's directory. If your app's source lives elsewhere, add it with `watchPaths: ['../src']` in the config. Press Ctrl+C to stop.
 
+### UI mode
+
+`rpgwright test --ui` takes over your terminal. You pick which tests to run from a list, and watch the running test's screen live. The screen is redrawn in place as the app changes, instead of scrolling.
+
+#### Interactive selection
+
+The filters, `--grep`, `test.only` and `--repeat-each` choose which tests are in the list, as they choose what a normal run runs.
+
+- **Several tests match** (`rpgwright test hudLayout --ui`): nothing runs yet. The UI opens on a list of the matching tests showing each one's status (`·` pending, `●` running, `✓` passed, `✖` failed, `⊘` aborted, `-` skipped) and how long its last run took. The selected test's file, line and last error are shown below the list. Run whichever tests you want, as often as you want. When a run finishes, you're back on the list.
+- **One test matches** (`rpgwright test menu.rpg.test.js:12 --ui`): it runs at once, and its result stays on screen until you press `q`.
+
+Keys on the list:
+
+| Key | Does |
+| --- | --- |
+| `↑`/`↓` or `k`/`j` | Move the selection |
+| `enter` | Run the selected test |
+| `a` | Run every test in the list, in order |
+| `f` | Run the tests that failed or were aborted |
+| `r` | Rerun the last run (or the selected test, if nothing has run yet) |
+| `q` | Quit |
+
+Keys while a test runs:
+
+| Key | Does |
+| --- | --- |
+| `space` | Pause before the test's next action (a key press, an `expect`, a `test.step`), or resume |
+| `n` | While paused: let one action run, then pause again |
+| `esc` | Abort the test and go back to the list. Its `afterEach`/`afterAll` hooks and fixture teardown still run, and the rest of the run is cancelled |
+| `q` | Abort the test and quit |
+
+`Ctrl+C` always quits, whatever is happening.
+
+A paused test doesn't time out: its timeout clock stops while it's paused. An aborted test counts as failed but is never retried, and gets no trace.
+
+#### The live view
+
+While a test runs, the UI shows:
+
+- **Header:** the test file and name, how far through the run you are (`3/12`), how many tests have passed, failed and been skipped so far, and how long the test and the whole run have taken.
+- **The app's screen**, drawn in a box at the app's own size (`cols`×`rows`), with its colors and cursor. If your terminal is smaller than that, the top-left part that fits is shown and the box's label says so (`100×30 (showing 78×18)`). Resizing your terminal re-draws the layout.
+- **Footer:** the `test.step` you're inside, the last action (`press "Enter" ✓`), and the test's status (`RUNNING`, `PASSED`, or `FAILED` with the first line of its error).
+
+When you quit, the terminal goes back to how it was and the usual summary and full failure reports are printed, exactly as `list` prints them, counting each test you ran once, by its latest result. Tests you never ran aren't counted. Anything your tests print with `console.log` is printed then too. The exit code is `1` if the latest run of any test failed or was aborted (or an `afterAll` hook failed in the last run), otherwise `0`. The terminal is also restored if the run crashes.
+
+`--ui` changes how some other options behave:
+
+- **Workers:** tests run one file at a time (`workers` is forced to `1`), so there's only ever one screen to show.
+- **Reporters:** console reporters (`list`, `dot`, `github`) are replaced by the UI. File reporters (`json`, `junit`) from your config or `--reporter` still write their files.
+- **Retries:** configured `retries` apply to every test you run from the list.
+- **Services and `globalSetup`:** started once when the UI opens, and stopped after you quit.
+- **Watch mode:** `--ui` can't be combined with `--watch`; the run stops with an error.
+- **Output must be a terminal.** If stdout is piped or redirected (CI logs, `| tee`), `--ui` stops with an error. Run without it there.
+
+A test that launches more than one process (`launch()`) shows the first one.
+
 ### Exit codes
 
 `rpgwright test` exits `0` if every test passed, `1` if any test failed, a test only passed on a retry with `--fail-on-flaky`, a rejection went unhandled (a missing `await`), or the config itself couldn't be loaded — the standard convention for wiring into CI or a pre-commit/pre-push hook.
+
+## Saving and replaying runs
+
+### Saving a run: `--save-run`
+
+`rpgwright test --save-run` (or `saveRun: true` in the config) writes one file per test that launched an app, to `<outputDir>/<file>--<test>.run.json` (`outputDir` defaults to `test-results` next to the config file; the name is the test file's path under `testDir` and the test's name, like trace files). It's written whatever the outcome: passed, failed, or aborted from the UI. A failing test's report includes a `Run: <path>` line pointing at it. In a `--ui` session, rerunning a test saves each run as a new file (`-2`, `-3`, …) instead of overwriting.
+
+The file holds everything needed to watch the test again: the test's name, file and line, its result, how long it took and its error, and for each process the test launched, every byte of output the app wrote, every resize, and every action and `test.step` with its time.
+
+- It works together with `--ui` and `--trace`.
+- With `--retries`, only a test's final attempt is saved.
+- A test that launched several processes (`launch()`) gets one file with a session for each, in launch order.
+- Run files can be large: they keep all of an app's output, so a long test, or an app that redraws often, makes a big file. Turn the option on when you need it, rather than for every CI run.
+
+### Replaying a run: `rpgwright play`
+
+```bash
+npx rpgwright play test-results/menu--opens-the-settings.run.json
+npx rpgwright play test-results/menu--two-apps.run.json --session 2
+npx rpgwright play test-results/menu--opens-the-settings.run.json --speed 0.5
+```
+
+`rpgwright play` replays a saved run full-screen, in the same view as `--ui`, at the speed it was recorded (or faster or slower, with `--speed` or the speed keys). It doesn't run anything: your app isn't launched and no test code is loaded, so you can replay a run from CI on your own machine, without the app or its setup.
+
+- **Header:** `REPLAY`, the test's file, line and name, its original result (`recorded ✖ failed in 2.3s`), the playback position (`▶ 1.2s / 4.0s`), the playback speed (`1.5×`), and `⏸ PAUSED` while paused.
+- **The app's screen** as it was at that moment, in a box at the app's size; it changes size when the app's terminal was resized.
+- **Footer:** the `test.step` the test was in and its last action at that moment. When playback ends, it says `Playback finished`, with what the failure expected and the last action if the test failed. The screen stays up until you quit.
+
+| Key | Does |
+| --- | --- |
+| `+`, `=` or `]` | Play faster: the next speed up, to at most `2×` |
+| `-`, `_` or `[` | Play slower: the next speed down, to at least `0.25×` |
+| `space` | Pause, or resume from where it paused |
+| `q` | Quit |
+| `Ctrl+C` | Quit |
+
+The speeds are `0.25×`, `0.5×`, `1×`, `1.5×` and `2×`. Changing speed carries on from the current moment; it doesn't skip ahead or back. Once playback has finished, the speed keys and `space` do nothing.
+
+| Option | Effect |
+|---|---|
+| `--session <n>` | Which of the test's processes to replay, counting from `1` in launch order (default `1`). The header shows `session n/m` when the run has more than one. |
+| `--speed <n>` | The speed to start at: `0.25`, `0.5`, `1`, `1.5` or `2` (default `1`). A trailing `x` is allowed (`--speed 0.5x`). |
+
+`rpgwright play` needs a terminal. It exits `1` with an error if stdin or stdout is piped or redirected, if the file is missing or isn't a run file (or was saved by a newer, incompatible RPGWright), if `--session` is out of range, or if `--speed` isn't one of the speeds above. It exits `0` when you quit.

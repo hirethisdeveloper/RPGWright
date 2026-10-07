@@ -228,8 +228,15 @@ export interface GameDriver {
   getModes(): TerminalModes;
   renderHtml(options?: { title?: string }): string;
   getTrace(): Trace;
+  getScreenCells(): Cell[][];
+  observe(listener: (event: GameObserverEvent) => void): { dispose(): void };
   readonly actions: ActionRecord[];
 }
+
+export type GameObserverEvent =
+  | { type: 'screen' }
+  | { type: 'action'; action: ActionRecord }
+  | { type: 'exit'; exitInfo: ExitInfo };
 
 export interface LaunchOptions {
   command: string;
@@ -256,6 +263,8 @@ export interface LaunchOptions {
   record?: boolean;
   /** false: run with plain pipes instead of a terminal (isTTY is false in the app). */
   tty?: boolean;
+  /** Awaited before every action (input, expect and wait methods, step, resize); a pending promise holds the test there. */
+  gate?: (() => Promise<void> | void) | null;
 }
 
 export function launchGame(options: LaunchOptions): Promise<GameDriver>;
@@ -267,6 +276,7 @@ export function encodeMouse(
   encoding?: TerminalModes['mouseEncoding'],
 ): string;
 export function renderScreenHtml(grid: Cell[][], options?: { cursor?: Cursor | null; title?: string }): string;
+export function renderScreenAnsi(grid: Cell[][], cursor?: Cursor | null): string[];
 
 export interface ProcessHandle {
   onData(callback: (chunk: string) => void): { dispose(): void };

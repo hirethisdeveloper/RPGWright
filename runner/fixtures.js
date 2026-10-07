@@ -102,8 +102,11 @@ async function unwind(stack) {
  *
  * A definition is either a plain value or
  * `async ({ ...deps }, use, testInfo) => { setup; await use(value); cleanup }`.
+ *
+ * `onGame(game, testInfo)`, when given, is told about every process launched
+ * (the game fixture and launch() alike) as soon as it starts.
  */
-function createFixtureScope({ defs = {}, launchOptions, testInfo }) {
+function createFixtureScope({ defs = {}, launchOptions, testInfo, onGame }) {
   const values = new Map();
   const pending = new Map();
   const teardowns = [];
@@ -166,6 +169,7 @@ function createFixtureScope({ defs = {}, launchOptions, testInfo }) {
     const game = await launchGame({ ...options, env });
     await onTeardown(() => game.stop().catch(() => {}));
     games.push(game);
+    if (onGame) onGame(game, testInfo);
     return game;
   }
 

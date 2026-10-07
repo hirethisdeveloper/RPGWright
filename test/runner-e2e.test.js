@@ -439,6 +439,56 @@ test('two processes', async ({ launch }) => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('rpgwright test --save-run: a run file per passing and failing test, readable by readRunFile; none for a skipped one', () => {
+  const { readRunFile } = require('../runner/runfile');
+  const dir = makeProject({
+    'saved.rpg.test.js': `const { test, describe } = require(${TEST_API});
+describe('saved', () => {
+  test('passes', async ({ game }) => {
+    await game.expectText('READY');
+    await game.type('hi');
+    await game.expectText('GOT');
+    await game.resize(30, 6);
+  });
+  test('fails', async ({ game }) => { await game.expectText('never', { timeout: 200 }); });
+  test.skip('skipped', async ({ game }) => {});
+});
+`,
+  });
+  const result = runCli(['test', '--save-run', '--trace', 'retain-on-failure'], { cwd: dir });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  const out = path.join(dir, 'test-results');
+  assert.deepEqual(fs.readdirSync(out).filter((f) => f.endsWith('.run.json')).sort(), [
+    'saved-rpg-test--saved-fails.run.json',
+    'saved-rpg-test--saved-passes.run.json',
+  ]);
+  // Alongside --trace: the failing test has both, and its message names both.
+  assert.ok(fs.existsSync(path.join(out, 'saved-rpg-test--saved-fails.trace.html')));
+  assert.match(result.stdout, /Run: .*saved-rpg-test--saved-fails\.run\.json/);
+
+  const passed = readRunFile(path.join(out, 'saved-rpg-test--saved-passes.run.json'));
+  assert.deepEqual(passed.test, { title: 'saved > passes', file: 'saved.rpg.test.js', line: 3 });
+  assert.equal(passed.result.status, 'passed');
+  assert.equal(passed.result.error, null);
+  assert.equal(passed.sessions.length, 1);
+  const [session] = passed.sessions;
+  assert.deepEqual([session.cols, session.rows], [40, 8]);
+  assert.ok(session.events.some(([, type, data]) => type === 'o' && data.includes('READY')));
+  assert.ok(session.events.some(([, type, data]) => type === 'i' && data === 'hi'));
+  assert.ok(session.events.some(([, type, data]) => type === 'r' && data === '30x6'));
+  assert.deepEqual(session.actions.map((a) => a.type).slice(0, 4), ['expectText', 'type', 'expectText', 'resize']);
+  // Actions and events share one clock, in seconds.
+  const lastEvent = session.events[session.events.length - 1][0];
+  assert.ok(session.actions.every((a) => a.t >= 0 && a.t <= lastEvent + 1), JSON.stringify(session.actions));
+
+  const failed = readRunFile(path.join(out, 'saved-rpg-test--saved-fails.run.json'));
+  assert.equal(failed.result.status, 'failed');
+  assert.equal(failed.result.error.message, 'E2E TEST FAILED');
+  assert.match(failed.result.error.report, /Expected:/);
+  assert.doesNotMatch(failed.result.error.report, /Trace: |Run: /);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('rpgwright test: --reporter takes a comma-separated list; --list counts repeats; a file that fails to load is named', () => {
   const dir = makeProject({ 'pair.rpg.test.js': PASSING_PAIR });
   const both = runCli(['test', '--reporter', 'dot,github'], { cwd: dir });
@@ -1005,4 +1055,57 @@ test('types are stripped and the test runs', async ({ game, viewport }) => {
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /typed\.rpg\.test\.ts[\s\S]*✓ types are stripped and the test runs/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// Runs `rpgwright test --ui` in a real terminal, driven by RPGWright itself.
+function launchUi(args) {
+  const { launchGame } = require('../src/game');
+  return launchGame({
+    command: process.execPath,
+    args: [CLI, 'test', '--ui', '--config', 'test/rpg/menu-nav/rpgwright.config.js', ...args],
+    cwd: REPO_ROOT,
+    cols: 120,
+    rows: 40,
+    expectTimeout: 30000,
+  });
+}
+
+test('rpgwright test --ui: several matching tests open on the HUD; enter runs one, q quits, restoring the terminal and printing the summary', async () => {
+  const ui = await launchUi(['--grep', 'expectScreen with']);
+  try {
+    await ui.expectTerminal('toBeInAltScreen');
+    await ui.expectText('expectScreen with a RegExp matches anywhere in the full screen');
+    await ui.expectText('expectScreen with a string requires an exact whole-screen match');
+    await ui.press('Enter');
+    await ui.expectText('✓ 1 passed');
+    await ui.press('q');
+    await ui.expectExit({ code: 0 });
+    await ui.expectTerminal('toBeInAltScreen', [], { not: true });
+    await ui.expectCursorVisible(true);
+    await ui.expectText(/1 passed \(\d+ms\)/);
+    await ui.expectNotText('failed', { holdFor: 0 });
+  } finally {
+    await ui.stop();
+  }
+});
+
+test('rpgwright test --ui: a single matching test runs at once and stays up until q', async () => {
+  const ui = await launchUi(['navigation.rpg.test.js:73']);
+  try {
+    await ui.expectText('✓ 1 passed');
+    await ui.expectTerminal('toBeInAltScreen');
+    await ui.press('q');
+    await ui.expectExit({ code: 0 });
+    await ui.expectTerminal('toBeInAltScreen', [], { not: true });
+    await ui.expectText(/1 passed \(\d+ms\)/);
+  } finally {
+    await ui.stop();
+  }
+});
+
+test('rpgwright test --ui: fails clearly when the output is not a terminal', () => {
+  const result = runCli(['test', '--ui', '--config', 'test/rpg/menu-nav/rpgwright.config.js'], { cwd: REPO_ROOT });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--ui needs an interactive terminal/);
+  assert.doesNotMatch(result.stdout, /\x1b\[\?1049h/);
 });

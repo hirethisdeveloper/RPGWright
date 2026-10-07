@@ -55,7 +55,8 @@ These are specific to `rpgwright test` itself, not to any individual launched pr
 | `watchPaths` | `[]` | Extra directories `--watch` watches, relative to the config file. |
 | `retries` | `0` | How many times to rerun a failed test. A test that passes on a retry is reported as flaky. See [Writing tests](./writing-tests.md#retries-and-repeated-runs). |
 | `trace` | `'off'` | Write an HTML trace per test: `'on'`, `'off'`, or `'retain-on-failure'`. See [Diagnostics](./diagnostics.md#traces). |
-| `outputDir` | `test-results` next to the config file | Where traces, recordings and the `json`/`junit` reports are written. |
+| `saveRun` | `false` | Save a replayable `.run.json` file per test that launched an app, for `rpgwright play`. Same as `--save-run`. See [CLI](./cli.md#saving-and-replaying-runs). |
+| `outputDir` | `test-results` next to the config file | Where traces, recordings, run files and the `json`/`junit` reports are written. |
 | `reporter` | `'list'` | Output style: `'list'`, `'dot'`, `'json'`, `'junit'` or `'github'`, or a list of several (`['list', ['junit', { outputFile: 'e2e.xml' }]]`). See [CLI reference](./cli.md#reporter-styles). An unrecognized value fails immediately with a clear error rather than silently falling back to the default. |
 
 ## `--config <path>`

@@ -78,10 +78,17 @@ function validateTrace(mode, resolvedPath) {
   return mode;
 }
 
+function validateSaveRun(saveRun, resolvedPath) {
+  if (typeof saveRun !== 'boolean') {
+    throw new Error(`${resolvedPath}: "saveRun" must be true or false, got ${JSON.stringify(saveRun)}.`);
+  }
+  return saveRun;
+}
+
 /**
  * Locates and loads rpgwright.config.js, then validates and defaults the
  * runner-level fields (testDir, testMatch, timeout, reporter, viewports,
- * trace, retries, workers, services, globalSetup/globalTeardown,
+ * trace, saveRun, retries, workers, services, globalSetup/globalTeardown,
  * outputDir). Deliberately does NOT default
  * launchGame-specific fields (command, cols, killSignal, ...) here —
  * those stay whatever the config file says (undefined if omitted), and
@@ -122,6 +129,7 @@ function loadConfig({ configPath, cwd = process.cwd() } = {}) {
     reporter: userConfig.reporter || DEFAULT_REPORTER,
     viewports: normalizeViewports(userConfig.viewports, resolvedPath),
     trace: validateTrace(userConfig.trace ?? DEFAULT_TRACE, resolvedPath),
+    saveRun: validateSaveRun(userConfig.saveRun ?? false, resolvedPath),
     retries: validateRetries(userConfig.retries ?? 0, resolvedPath),
     workers: validateWorkers(userConfig.workers ?? 1, resolvedPath),
     services: normalizeServices(userConfig.services, path.dirname(resolvedPath), resolvedPath),

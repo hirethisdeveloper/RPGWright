@@ -36,6 +36,7 @@ const {
 } = require('./layout');
 
 const UPDATE_EVENT = 'update';
+const SCREEN_EVENT = { type: 'screen' };
 // Input actions start a new "since" window for expectSeen, expectNoFlicker
 // and toHaveBell.
 const INPUT_ACTIONS = new Set(['press', 'type', 'paste', 'mouse', 'resize']);
@@ -204,6 +205,9 @@ async function launchGame({
   scrollback = 1000,
   record = false,
   tty = true,
+  // Awaited before every action (input, expect*/wait*, step, resize) when
+  // given: how the runner's UI pauses a test between actions.
+  gate = null,
 } = {}) {
   const keySequences = { ...KEY_SEQUENCES, ...keys };
   const childEnv = buildEnv(env, { colorDepth, locale });
@@ -246,7 +250,10 @@ async function launchGame({
     recordEvent('o', chunk);
     parsed = terminal
       .write(chunk, recordFrame)
-      .then(() => updates.emit(UPDATE_EVENT))
+      .then(() => {
+        updates.emit(UPDATE_EVENT);
+        notify(SCREEN_EVENT);
+      })
       .catch(() => {});
   });
 
@@ -262,6 +269,28 @@ async function launchGame({
     if (!ptyHandle.getExitInfo()) ptyHandle.write(reply);
   });
 
+  // Live observers (see observe()). Events are only built when someone is
+  // listening, and a throwing listener never reaches the driver.
+  const observers = new Set();
+  function notify(event) {
+    if (observers.size === 0) return;
+    const payload = typeof event === 'function' ? event() : event;
+    for (const listener of [...observers]) {
+      try {
+        listener(payload);
+      } catch {
+        // an observer's failure is its own
+      }
+    }
+  }
+
+  function observe(listener) {
+    observers.add(listener);
+    return { dispose: () => observers.delete(listener) };
+  }
+
+  exitedAndParsed().then((exitInfo) => notify(() => ({ type: 'exit', exitInfo })));
+
   function onUpdate(listener) {
     updates.on(UPDATE_EVENT, listener);
     return { dispose: () => updates.off(UPDATE_EVENT, listener) };
@@ -276,6 +305,7 @@ async function launchGame({
     if (!stopped) record.bells = terminal.getSignals().bellCount;
     captureInto(record);
     actions.push(record);
+    notify(() => ({ type: 'action', action: record }));
     return record;
   }
 
@@ -328,7 +358,9 @@ async function launchGame({
   // failed wait into the standard failure report. `expected` may be a
   // function, evaluated at failure time, so the report can include what was
   // last observed; it may return { expected, diff } to add a diff section.
-  async function runAssertion(type, detail, expected, wait) {
+  // `gated` is false for a wait that is part of another action (settling).
+  async function runAssertion(type, detail, expected, wait, gated = true) {
+    if (gate && gated) await gate();
     const record = recordAction(type, detail, null);
     try {
       await wait();
@@ -361,9 +393,10 @@ async function launchGame({
   }
 
   async function send(type, bytes, detail, opts) {
+    if (gate) await gate();
     writeInput(bytes);
     recordAction(type, detail, true);
-    if (opts && opts.settle) await waitForStable({ quiet: settleQuiet(opts.settle) });
+    if (opts && opts.settle) await settle(opts.settle);
   }
 
   async function press(key, opts) {
@@ -392,6 +425,7 @@ async function launchGame({
   // all motion. Unreported events are recorded but not sent.
   let heldButton = null;
   async function sendMouse(event, detail, opts = {}) {
+    if (gate) await gate();
     const { mouseTracking, mouseEncoding } = terminal.getModes();
     if (mouseTracking === 'none') {
       throw new Error(
@@ -407,7 +441,7 @@ async function launchGame({
     const report = reported && encodeMouse(event, mouseEncoding);
     if (reported) writeInput(mouseEncoding === 'x10' ? Buffer.from(report, 'latin1') : report);
     recordAction('mouse', reported ? detail : `${detail}, not reported in ${mouseTracking} mode`, true);
-    if (opts.settle) await waitForStable({ quiet: settleQuiet(opts.settle) });
+    if (opts.settle) await settle(opts.settle);
   }
 
   function mouseDetail(name, x, y, opts = {}) {
@@ -534,16 +568,30 @@ async function launchGame({
     return terminal.getModes();
   }
 
-  function waitForStable(opts = {}) {
+  function quietFor(opts, gated) {
     const quiet = opts.quiet ?? DEFAULT_QUIET_MS;
-    return runAssertion('waitForStable', `quiet ${quiet}ms`, `no screen update for ${quiet}ms`, () =>
-      waitForQuiet(onUpdate, { quiet, timeout: opts.timeout ?? expectTimeout }),
+    return runAssertion(
+      'waitForStable',
+      `quiet ${quiet}ms`,
+      `no screen update for ${quiet}ms`,
+      () => waitForQuiet(onUpdate, { quiet, timeout: opts.timeout ?? expectTimeout }),
+      gated,
     );
+  }
+
+  function waitForStable(opts = {}) {
+    return quietFor(opts, true);
+  }
+
+  // An input's `settle` option: part of that action, so not gated again.
+  function settle(option) {
+    return quietFor({ quiet: settleQuiet(option) }, false);
   }
 
   // Groups the actions recorded inside `fn` under a named entry, so the
   // failure report's action list reads as an outline of the scenario.
   async function step(name, fn) {
+    if (gate) await gate();
     const record = recordAction('step', JSON.stringify(name), null);
     stepDepth += 1;
     try {
@@ -555,6 +603,7 @@ async function launchGame({
       throw err;
     } finally {
       stepDepth -= 1;
+      notify(() => ({ type: 'action', action: record }));
     }
   }
 
@@ -810,10 +859,12 @@ async function launchGame({
   }
 
   async function resize(cols, rows) {
+    if (gate) await gate();
     ptyHandle.resize(cols, rows);
     terminal.resize(cols, rows);
     recordEvent('r', `${cols}x${rows}`);
     recordAction('resize', `${cols}, ${rows}`, true);
+    notify(SCREEN_EVENT);
   }
 
   async function stop(opts = {}) {
@@ -827,6 +878,11 @@ async function launchGame({
     finalScreen = { grid: terminal.getScreenCells(), cursor: terminal.getCursor() };
     terminal.dispose();
     return exitInfo;
+  }
+
+  // The cell grid as it is now, or as it was when stop() ran.
+  function getScreenCells() {
+    return finalScreen ? finalScreen.grid : terminal.getScreenCells();
   }
 
   function getScreenText() {
@@ -889,6 +945,8 @@ async function launchGame({
     resize,
     stop,
     getScreenText,
+    getScreenCells,
+    observe,
     renderHtml,
     getTrace,
     actions,

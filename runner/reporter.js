@@ -17,12 +17,13 @@ function createState() {
 
 // Shared by every reporter style: the failure-block dump and final summary
 // line are identical regardless of how per-test progress was printed.
-function printSummary(state, durationMs) {
-  console.log('');
+// `log` writes one line (the ui reporter passes its own stdout's).
+function printSummary(state, durationMs, log = console.log) {
+  log('');
   for (const [index, failure] of state.failures.entries()) {
-    console.log(`${RED}${index + 1}) ${failure.name}${RESET}`);
-    console.log(indent(failure.error.message, 4));
-    console.log('');
+    log(`${RED}${index + 1}) ${failure.name}${RESET}`);
+    log(indent(failure.error.message, 4));
+    log('');
   }
 
   const parts = [];
@@ -30,7 +31,7 @@ function printSummary(state, durationMs) {
   if (state.flakyCount) parts.push(`${YELLOW}${state.flakyCount} flaky${RESET}`);
   if (state.failedCount) parts.push(`${RED}${state.failedCount} failed${RESET}`);
   if (state.skippedCount) parts.push(`${DIM}${state.skippedCount} skipped${RESET}`);
-  console.log(`${parts.join(', ') || '0 tests'} ${DIM}(${durationMs}ms)${RESET}`);
+  log(`${parts.join(', ') || '0 tests'} ${DIM}(${durationMs}ms)${RESET}`);
 
   return { passed: state.passedCount, failed: state.failedCount, skipped: state.skippedCount, flaky: state.flakyCount };
 }
@@ -110,6 +111,7 @@ function createDotReporter() {
 // Every reporter receives the same events. `attempt` is { retry }; `meta`
 // is { file, line } for the test (absent for afterAll failures).
 //   fileStarted(relativePath)
+//   testStarted(name, meta, attempt)   optional; before each attempt
 //   testPassed(name, durationMs, attempt, meta)
 //   testFailed(name, durationMs, error, attempt, meta)
 //   testSkipped(name, meta)
@@ -282,17 +284,30 @@ function createReporter(spec = 'list', { outputDir = path.resolve('test-results'
       : DEFAULT_OUTPUT_FILES[name] && path.join(outputDir, DEFAULT_OUTPUT_FILES[name]);
     return factory({ ...options, outputFile, cwd });
   });
-  if (reporters.length === 1) return reporters[0];
+  return combineReporters(reporters);
+}
 
+const EVENTS = ['fileStarted', 'testStarted', 'testPassed', 'testFailed', 'testSkipped', 'summary'];
+
+/**
+ * One reporter that forwards every event to each of `reporters`, in order,
+ * skipping optional events one doesn't implement, and returns the first
+ * one's result (its totals, for summary).
+ */
+function combineReporters(reporters) {
+  if (reporters.length === 1) return reporters[0];
   const forward = (method) => (...args) => {
     let result;
     reporters.forEach((r, i) => {
-      const value = r[method](...args);
+      const value = r[method] ? r[method](...args) : undefined;
       if (i === 0) result = value;
     });
     return result;
   };
-  return Object.fromEntries(['fileStarted', 'testPassed', 'testFailed', 'testSkipped', 'summary'].map((m) => [m, forward(m)]));
+  return Object.fromEntries(EVENTS.map((m) => [m, forward(m)]));
 }
 
-module.exports = { createReporter };
+// Reporters that write a file rather than to the terminal.
+const FILE_REPORTERS = Object.keys(DEFAULT_OUTPUT_FILES);
+
+module.exports = { createReporter, combineReporters, createState, recordPass, printSummary, FILE_REPORTERS };
